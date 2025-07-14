@@ -14,7 +14,7 @@ Alternatively (or additionally), we might convert each dog’s race history into
 
 **Performance/Rating Calculation:**  As a concrete example, an *Elo-like rating* can be derived from the chronological race results of each dog.  This captures how a dog performed *relative to its competition over time*.  Research in equine sports notes that an Elo-based index “allows evaluation of a horse by considering various different traits such as wins, placings, earnings over the entire career altogether”.  In practice, we would run through each past race, updating the dog’s rating based on finishing order (perhaps weighted by class/distance), yielding a single score per dog for model training.  This is just one way to flatten the time-series performance data; other detailed representations (like sequences or summary stats of the last N races) could preserve more nuance if needed.
 
-**Summary:** In Markdown form, the modified outline might look like:
+**Summary:**
 
 * **Race**: fields like `race_id, date, time, distance, class, prizes, Track track, List<Dog> participants, float[7] rainfall_7d, …`.  (Rainfall is an explicit 7-day vector to capture how recent precipitation altered track conditions.)
 
