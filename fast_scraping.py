@@ -115,77 +115,167 @@ def fast_scrape_multiple_dogs(dog_ids, output_file="dogs3.csv", batch_size=50):
     return len(all_race_data)
 
 def fast_get_dog_race_urls(driver, dog_id, wait):
-    """Optimized race URL collection with minimal delays"""
+    """Optimized race URL collection with minimal delays - FIXED VERSION"""
     race_urls = []
     
     try:
         profile_url = f"https://www.gbgb.org.uk/greyhound-profile/?greyhoundId={dog_id}"
         driver.get(profile_url)
         
+        # Wait for page to load
+        time.sleep(2)
+        
+        # Check if dog exists
+        if "No greyhound found" in driver.page_source or "No results found" in driver.page_source:
+            return race_urls
+        
         # Quick cookie handling
         try:
-            cookie_buttons = driver.find_elements(By.CSS_SELECTOR, "button.consent-btn, button.accept-cookies")
+            cookie_buttons = driver.find_elements(By.CSS_SELECTOR, "button.consent-btn, button.accept-cookies, .cookie-consent-btn")
             if cookie_buttons:
                 driver.execute_script("arguments[0].click();", cookie_buttons[0])
                 time.sleep(0.5)
         except:
             pass
         
-        # Set page size quickly
+        # Try to set page size to maximum
         try:
             from selenium.webdriver.support.ui import Select
-            select = Select(driver.find_element(By.CSS_SELECTOR, ".GreyhoundProfile__pageSize select"))
-            select.select_by_visible_text("100")
-            time.sleep(1)
+            select_elems = driver.find_elements(By.CSS_SELECTOR, "select")
+            for select_elem in select_elems:
+                try:
+                    select = Select(select_elem)
+                    options = [option.text for option in select.options]
+                    for size in ["All", "100", "50"]:
+                        if size in options:
+                            select.select_by_visible_text(size)
+                            time.sleep(2)
+                            break
+                    break
+                except:
+                    continue
         except:
             pass
         
-        def get_total_pages():
+        def extract_races_from_page():
+            """Extract races from current page"""
+            page_races = []
             soup = BeautifulSoup(driver.page_source, "html.parser")
-            pages = soup.select(".LiveResultsPagination__page")
-            page_numbers = [int(p.text.strip()) for p in pages if p.text.strip().isdigit()]
-            return max(page_numbers) if page_numbers else 1
-        
-        total_pages = get_total_pages()
-        
-        for page in range(1, total_pages + 1):
-            if page > 1:
-                page_buttons = driver.find_elements(By.CSS_SELECTOR, ".LiveResultsPagination__page")
-                for btn in page_buttons:
-                    if btn.text.strip() == str(page):
-                        driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(1)
-                        break
             
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            race_rows = soup.select(".GreyhoundRow")
-            
+            # Method 1: Look for standard race rows
+            race_rows = soup.select(".GreyhoundRow, tr")
             for row in race_rows:
-                race_link = row.select_one("a[href*='meeting']")
+                race_link = row.select_one("a[href*='meeting'], a[href*='race']")
                 if race_link and race_link.get('href'):
                     href = race_link['href']
-                    if href.startswith('http'):
-                        full_url = href
-                    else:
-                        full_url = "https://www.gbgb.org.uk" + href
+                    if not href.startswith('http'):
+                        href = "https://www.gbgb.org.uk" + href
                     
-                    meeting_match = re.search(r'meetingId=(\d+)', full_url)
-                    race_match = re.search(r'raceId=(\d+)', full_url)
-                    meeting_id = meeting_match.group(1) if meeting_match else ""
-                    race_id = race_match.group(1) if race_match else ""
+                    meeting_match = re.search(r'meetingId=(\d+)', href)
+                    race_match = re.search(r'raceId=(\d+)', href)
                     
-                    race_date = row.select_one(".GreyhoundRow__date")
-                    race_info = {
-                        'race_url': full_url,
-                        'meeting_id': meeting_id,
-                        'race_id': race_id,
-                        'race_date': race_date.text.strip() if race_date else ""
-                    }
-                    
-                    race_urls.append(race_info)
+                    if meeting_match and race_match:
+                        meeting_id = meeting_match.group(1)
+                        race_id = race_match.group(1)
+                        
+                        # Extract date
+                        race_date = ""
+                        date_elem = row.select_one(".GreyhoundRow__date, .date, td:first-child")
+                        if date_elem:
+                            race_date = date_elem.get_text(strip=True)
+                        
+                        race_info = {
+                            'race_url': href,
+                            'meeting_id': meeting_id,
+                            'race_id': race_id,
+                            'race_date': race_date
+                        }
+                        
+                        # Avoid duplicates
+                        race_key = f"{meeting_id}_{race_id}"
+                        if not any(f"{r['meeting_id']}_{r['race_id']}" == race_key for r in page_races):
+                            page_races.append(race_info)
+            
+            # Method 2: If no races found, try all links
+            if not page_races:
+                all_links = soup.select("a[href*='meeting'], a[href*='race']")
+                for link in all_links:
+                    href = link.get('href', '')
+                    if href and ('meetingId' in href or 'raceId' in href):
+                        if not href.startswith('http'):
+                            href = "https://www.gbgb.org.uk" + href
+                        
+                        meeting_match = re.search(r'meetingId=(\d+)', href)
+                        race_match = re.search(r'raceId=(\d+)', href)
+                        
+                        if meeting_match and race_match:
+                            race_info = {
+                                'race_url': href,
+                                'meeting_id': meeting_match.group(1),
+                                'race_id': race_match.group(1),
+                                'race_date': ""
+                            }
+                            
+                            race_key = f"{race_info['meeting_id']}_{race_info['race_id']}"
+                            if not any(f"{r['meeting_id']}_{r['race_id']}" == race_key for r in page_races):
+                                page_races.append(race_info)
+            
+            return page_races
         
-    except Exception:
-        pass
+        # Extract races from first page
+        race_urls.extend(extract_races_from_page())
+        
+        # Check for pagination and process additional pages
+        max_pages = 10  # Reasonable limit
+        current_page = 1
+        
+        while current_page < max_pages:
+            # Look for next page button or page numbers
+            next_buttons = driver.find_elements(By.CSS_SELECTOR, 
+                ".next-page, .pagination-next, a.next, [aria-label='Next page']")
+            
+            page_buttons = driver.find_elements(By.CSS_SELECTOR, 
+                ".pagination li, .pagination-item, .page-link")
+            
+            next_page_found = False
+            
+            # Try clicking next button
+            for btn in next_buttons:
+                try:
+                    if btn.is_enabled() and btn.is_displayed():
+                        driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(2)
+                        next_page_found = True
+                        break
+                except:
+                    continue
+            
+            # If no next button, try clicking page number
+            if not next_page_found:
+                target_page = current_page + 1
+                for btn in page_buttons:
+                    try:
+                        if btn.text.strip() == str(target_page):
+                            driver.execute_script("arguments[0].click();", btn)
+                            time.sleep(2)
+                            next_page_found = True
+                            break
+                    except:
+                        continue
+            
+            if not next_page_found:
+                break
+            
+            # Extract races from this page
+            new_races = extract_races_from_page()
+            if new_races:
+                race_urls.extend(new_races)
+                current_page += 1
+            else:
+                break
+        
+    except Exception as e:
+        print(f"Error processing dog {dog_id}: {str(e)}")
     
     return race_urls
 
@@ -343,12 +433,14 @@ def save_comprehensive_data(all_race_data, filename="dogs3.csv"):
             writer.writerow(race)
 
 if __name__ == "__main__":
-    # Test with single dog first
-    dog_ids = [str(i) for i in range(600000, 600010)]
+    # Test with a small range first
+    print("Testing fast scraping...")
+    dog_ids = ["637322", "637323", "637324"]  # Start with known IDs
     start_time = time.time()
     
-    total_records = fast_scrape_multiple_dogs(dog_ids, "dogs3.csv", batch_size=25)
+    total_records = fast_scrape_multiple_dogs(dog_ids, "dogs3.csv", batch_size=10)
     
     elapsed = time.time() - start_time
     print(f"Completed in {elapsed:.1f} seconds")
     print(f"Average: {elapsed/len(dog_ids):.1f} seconds per dog")
+    print(f"Total records scraped: {total_records}")
