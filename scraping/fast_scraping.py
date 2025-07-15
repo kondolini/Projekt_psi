@@ -72,7 +72,7 @@ def get_existing_dog_ids(filename):
     return set(df["dogId"].astype(str))
 
 
-def main(start_id=600050, end_id=600050, output_file="dogs5.csv"):
+def main(start_id=601010, end_id=650000, output_file="dogs5.csv"):
     """Smart append mode - only scrapes new dogs"""
     print(f"🚀 SMART APPEND MODE: Scraping dogs {start_id} to {end_id}")
     print(f"📂 Output file: {output_file}")
