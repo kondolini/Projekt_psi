@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import pickle
 
 
 class RaceParticipation:
@@ -50,6 +51,23 @@ class RaceParticipation:
 
     def __repr__(self):
         return f"RaceParticipation({self.dog_id} @ {self.race_datetime.strftime('%Y-%m-%d %H:%M')})"
+
+    def to_pickle(self, path: str):
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def from_pickle(path: str) -> "RaceParticipation":
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
+    def get_track_metadata(self) -> dict:
+        return {
+            "name": self.track_name,
+            "distance": self.distance,
+            "race_class": self.race_class,
+            "going": self.going,
+        }
 
 
 def parse_race_participation(row: dict) -> Optional[RaceParticipation]:
