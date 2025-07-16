@@ -1,0 +1,20 @@
+# Ignore compiled Python files
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore pickle files
+*.pkl
+
+# Ignore data files
+data/scraped/*.csv
+data/dogs/*.pkl
+data/race_participations/*.pkl
+data/unified/*.pkl
+
+# Ignore IDE and editor files
+.vscode/
+*.vscode/
+.idea/
+*.idea/
+__pycache__/
