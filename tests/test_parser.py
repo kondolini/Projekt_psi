@@ -13,69 +13,81 @@ from models.dog import Dog
 from models.track import Track
 from models.race_participation import parse_race_participation
 
-# --- Directory Setup ---
-data_path = os.path.join(parent_dir, "data", "scraped", "scraped_data.csv")
-output_dir = os.path.join(parent_dir, "data", "test_parsed")
-os.makedirs(output_dir, exist_ok=True)
+# Directory paths
+data_dir = "data/scraped"
+test_data_dir = "test_data"
+dogs_output_dir = os.path.join(test_data_dir, "dogs")
+tracks_output_dir = os.path.join(test_data_dir, "tracks")
+participation_output_dir = os.path.join(test_data_dir, "race_participations")
 
-# --- Containers ---
-race_participations = []
-dogs = {}
-tracks = {}
+# Ensure output directories exist
+os.makedirs(dogs_output_dir, exist_ok=True)
+os.makedirs(tracks_output_dir, exist_ok=True)
+os.makedirs(participation_output_dir, exist_ok=True)
 
-# --- Parse and Build ---
-print("🔍 Reading and parsing first 100 rows...")
-df = pd.read_csv(data_path)
-for i, row in tqdm(df.iterrows(), total=min(100, len(df)), desc="Processing Rows"):
-    if i >= 100:
-        break
+def save_dog(dog):
+    path = os.path.join(dogs_output_dir, f"{dog.id}.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(dog, f)
 
-    rp = parse_race_participation(row)
-    if not rp:
-        continue
+def save_track(track):
+    path = os.path.join(tracks_output_dir, f"{track.name}.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(track, f)
 
-    race_participations.append(rp)
+def save_participation(part):
+    path = os.path.join(participation_output_dir, f"{part.race_id}_{part.dog_id}.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(part, f)
 
-    # Add dog
-    if rp.dog_id and rp.dog_id not in dogs:
-        dogs[rp.dog_id] = Dog(dog_id=rp.dog_id)
+def load_dog(dog_id):
+    path = os.path.join(dogs_output_dir, f"{dog_id}.pkl")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
-    # Add track
-    if rp.track_name and rp.track_name not in tracks:
-        tracks[rp.track_name] = Track(name=rp.track_name)
+def test_parser():
+    df = pd.read_csv(os.path.join(data_dir, "scraped_data.csv"))
+    df = df.head(100)  # Limit to 100 rows for testing
 
-# --- Save ---
-with open(os.path.join(output_dir, "race_participations.pkl"), "wb") as f:
-    pickle.dump(race_participations, f)
-with open(os.path.join(output_dir, "dogs.pkl"), "wb") as f:
-    pickle.dump(dogs, f)
-with open(os.path.join(output_dir, "tracks.pkl"), "wb") as f:
-    pickle.dump(tracks, f)
+    track_cache = {}
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing rows"):
+        participation = parse_race_participation(row)
+        if not participation:
+            continue
 
-print("\n✅ Objects saved to:", output_dir)
+        # Save race participation
+        save_participation(participation)
 
-# --- Reload and Print Summary ---
-print("\n🔄 Reloading and previewing saved objects...")
+        # Save or update dog
+        dog = load_dog(participation.dog_id) or Dog(dog_id=participation.dog_id)
+        dog.add_participations([participation])
+        save_dog(dog)
 
-with open(os.path.join(output_dir, "race_participations.pkl"), "rb") as f:
-    rps = pickle.load(f)
-with open(os.path.join(output_dir, "dogs.pkl"), "rb") as f:
-    dgs = pickle.load(f)
-with open(os.path.join(output_dir, "tracks.pkl"), "rb") as f:
-    trks = pickle.load(f)
+        # Save track if not already cached
+        track_name = participation.track_name
+        if track_name and track_name not in track_cache:
+            track = Track.from_race_participations([participation])
+            save_track(track)
+            track_cache[track_name] = track
 
-print(f"\n📊 Loaded {len(rps)} RaceParticipations")
-print(f"🐶 Loaded {len(dgs)} Dogs")
-print(f"🏟 Loaded {len(trks)} Tracks")
+    print("\n--- Example Saved Objects ---")
+    sample_dog_files = os.listdir(dogs_output_dir)[:3]
+    sample_track_files = os.listdir(tracks_output_dir)[:3]
+    sample_part_files = os.listdir(participation_output_dir)[:3]
 
-print("\n🎯 Sample RaceParticipations:")
-for rp in rps[:5]:
-    print("   ", rp)
+    for f in sample_dog_files:
+        with open(os.path.join(dogs_output_dir, f), "rb") as file:
+            print("Dog:", pickle.load(file))
 
-print("\n🐕 Sample Dogs:")
-for dog in list(dgs.values())[:3]:
-    print("   ", dog)
+    for f in sample_track_files:
+        with open(os.path.join(tracks_output_dir, f), "rb") as file:
+            print("Track:", pickle.load(file))
 
-print("\n🏁 Sample Tracks:")
-for track in list(trks.values())[:3]:
-    print("   ", track)
+    for f in sample_part_files:
+        with open(os.path.join(participation_output_dir, f), "rb") as file:
+            print("Participation:", pickle.load(file))
+
+if __name__ == "__main__":
+    test_parser()

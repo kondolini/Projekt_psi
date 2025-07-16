@@ -1,5 +1,5 @@
 from typing import Optional
-from race_participation import RaceParticipation
+from .race_participation import RaceParticipation
 
 
 class Track:
