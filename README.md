@@ -8,56 +8,78 @@ To ensure realistic forecasting, we model races **chronologically**, maintaining
 
 ## 🧱 Core Data Classes
 
-### 🏁 `Race` class
+### ✅ 🐕 `Dog` class
 
-Encapsulates a single race event.
+Defines a greyhound and optionally maintains dynamic race data.
 
-**Fields:**
+**✅ Implemented Fields:**
 
-* `race_date`, `race_time` — when the race occurred.
-* `race_class`, `distance`, `category`, `prizes`.
-* **Weather conditions**:
+* `id` (formerly `dog_id`) — unique dog identifier
+* `participations` — list of `RaceParticipation` objects
+* Supports `add_participations()` to bulk-add races
+* Can be serialized/deserialized via `pickle`
+* Construction pipeline available in `build_and_save_dogs.py`
 
-  * `rainfall_7d`: `[float; 7]` — rainfall (mm) per day before the race.
-  * `humidity`: Float
-  * `temperature`: Float (°C)
-* **Dog race-level data**:
+**🔜 Planned:**
 
-  * `odds_vec`: `[float; num_dogs * 2]` — win and place odds before the race for each dog.
-  * `race_time_vec`: `[float; num_traps]` — actual finish time per trap.
-  * `commentary_tags_vec`: `[list[str]; num_dogs]` — standardized tags describing behavior (e.g., `SAw`, `Ld1/2`, `EvCh`).
-
-**References:**
-
-* List of participating `Dog` objects (including `trap_number`, `dog_id`, etc.)
-* Associated `Track` object
+* Static fields: `name`, `birth_date`, `color`, `weight`, `trainer`
+* Lineage: references to `sire`, `dam` (`Dog` instances or IDs)
+* `memory_vector`: a learnable embedding to capture dynamic race form
 
 ---
 
-### 🐕 `Dog` class
+### ✅ 🎟️ `RaceParticipation` class
 
-Defines a greyhound and optionally maintains a dynamic memory.
+Represents a **dog’s entry in a single race**.
 
-**Static fields:**
+**✅ Implemented Fields:**
 
-* `dog_id`, `name`, `birth_date`, `color`, `weight`, `trainer`
-* Lineage: references to `sire` and `dam` (each another `Dog` object)
+* `race_id`, `trap_number`, `finish_time`, `position`, `odds`, etc.
+* Structured `commentary_tags` as list of strings
+* Built from raw scraped CSV rows via `parse_race_participation()`
+* Serialized individually to `data/race_participations/`
 
-**Dynamic fields:**
+**✅ Status:**
 
-* `memory_vector`: a learned embedding of performance form (updated chronologically)
-* No recursive storage of race history — it’s modeled via `memory_vector` during training.
+* Used in `Dog`'s `participations`
+* Core parsing logic complete
 
 ---
 
-### 🏟 `Track` class
+### 🔜 🏁 `Race` class
 
-Represents track properties and identity.
+Encapsulates a full race event, across **all dogs**.
 
-* `name`, `location`, `surface_type`, `geometry`
-* May include drainage features, sand type, or baseline condition indicators
+**🔜 To Implement:**
 
-Each race references a track to inform how local conditions (combined with weather) may impact performance.
+* Fields:
+
+  * `race_date`, `race_time`, `race_class`, `distance`, `category`, `prizes`
+  * `rainfall_7d`: `[float; 7]`
+  * `humidity`, `temperature`
+  * `odds_vec`, `race_time_vec`, `commentary_tags_vec`
+
+**Planned References:**
+
+* List of participating `Dog` objects (including `trap_number`)
+* `Track` object
+
+This will be constructed later using `race_to_dog_index.pkl` and the `Dog` participations.
+
+---
+
+### 🔜 🏟 `Track` class
+
+Defines the track a race was held on.
+
+**🔜 To Implement:**
+
+* Fields:
+
+  * `name`, `location`, `surface_type`, `geometry`
+  * Optional: drainage, sand composition, track bias
+
+Will be linked to `Race` objects once track metadata becomes available.
 
 ---
 
