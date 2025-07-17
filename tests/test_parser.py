@@ -18,7 +18,7 @@ from models.race_participation import parse_race_participation
 
 # Parameters
 NUM_BUCKETS = 10
-ROWS_PER_TEST = 10_000  # Now using 10,000 rows
+ROWS_PER_TEST = 100_000  # Now using 10,000 rows
 
 # Paths
 data_dir = "data/scraped"

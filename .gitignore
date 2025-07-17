@@ -3,14 +3,11 @@
 *.pyo
 *.pyd
 
-# Ignore pickle files
-*.pkl
-
-# Ignore data files
+# Ignore specific data files, not all .pkl files
 data/scraped/*.csv
-data/dogs/*.pkl
-data/race_participations/*.pkl
-data/unified/*.pkl
+
+# Allow .pkl files by default, then selectively ignore folders if needed
+# If you later want to exclude individual files again, do so explicitly
 
 # Ignore IDE and editor files
 .vscode/
