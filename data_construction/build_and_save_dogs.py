@@ -6,9 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-# Extend module path to include project root
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.join(script_dir, '..')
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, parent_dir)
 
 from models.dog import Dog

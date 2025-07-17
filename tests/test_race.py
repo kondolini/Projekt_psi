@@ -1,9 +1,8 @@
 import os
 import sys
 import pickle
-from tqdm import tqdm
 
-# ---------- Extend module path ----------
+# Extend module path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.join(script_dir, '..')
 sys.path.insert(0, parent_dir)
@@ -12,79 +11,63 @@ from models.race import Race
 from models.dog import Dog
 from models.track import Track
 
-# ---------- Paths ----------
-dogs_dir = "data/dogs"
-participations_dir = "data/race_participations"
-tracks_dir = "data/tracks"
-output_dir = "test_data/race"
-os.makedirs(output_dir, exist_ok=True)
+DOGS_DIR = "data/dogs"
+TRACKS_DIR = "data/tracks"
+PARTICIPATIONS_DIR = "data/race_participations"
+RACES_OUT = "data/races"
+os.makedirs(RACES_OUT, exist_ok=True)
 
-# ---------- Load Functions ----------
-
-def load_dog_buckets() -> dict[str, Dog]:
+def load_all_dogs() -> dict:
     dogs = {}
-    for fname in os.listdir(dogs_dir):
+    for fname in os.listdir(DOGS_DIR):
         if fname.endswith(".pkl"):
-            with open(os.path.join(dogs_dir, fname), "rb") as f:
-                bucket = pickle.load(f)
-                dogs.update(bucket)
+            with open(os.path.join(DOGS_DIR, fname), "rb") as f:
+                dogs.update(pickle.load(f))
     return dogs
 
-def load_participation_buckets() -> list:
-    participations = []
-    for fname in os.listdir(participations_dir):
+def load_all_tracks() -> dict:
+    tracks = {}
+    for fname in os.listdir(TRACKS_DIR):
         if fname.endswith(".pkl"):
-            with open(os.path.join(participations_dir, fname), "rb") as f:
-                bucket = pickle.load(f)
-                participations.extend(bucket)
-    return participations
+            with open(os.path.join(TRACKS_DIR, fname), "rb") as f:
+                track = pickle.load(f)
+                tracks[track.name] = track
+    return tracks
 
-def load_track_by_name(name: str) -> Track:
-    path = os.path.join(tracks_dir, f"{name}.pkl")
-    with open(path, "rb") as f:
-        return pickle.load(f)
+def test_race_construction():
+    dogs = load_all_dogs()
+    tracks = load_all_tracks()
 
-def reconstruct_race(race_id: str, race_to_dog_index: dict[str, list[str]], all_participations: list[RaceParticipation]) -> Race:
-    dog_ids = race_to_dog_index[race_id]
-    dogs = [load_dog(did) for did in dog_ids]
+    sample_race_ids = set()
+    for dog in dogs.values():
+        for p in dog.race_participations:
+            sample_race_ids.add(p.race_id)
+        if len(sample_race_ids) >= 10:
+            break
 
-    participations = []
-    track_name = None
-    for dog in dogs:
-        part = dog.get_participation_by_race_id(race_id)
-        if part:
-            participations.extend(part)
-            if part.track_name:
-                track_name = part.track_name
-
-    if not participations:
-        raise ValueError(f"No participation data for race_id={race_id}")
-
-    track = load_track_by_name(track_name) if track_name else None
-    race = Race.from_participations(race_id, participations, track=track)
-    return race
-
-def test_race():
-    print("Loading race_to_dog_index...")
-    with open(race_to_dog_index_path, "rb") as f:
-        race_to_dog_index = pickle.load(f)
-
-    print("Loading all participations...")
-    all_participations = load_all_participations()
-
-    sample_race_ids = random.sample(list(race_to_dog_index.keys()), 3)
-
-    print("\n--- Testing Race Reconstruction ---\n")
-    for race_id in sample_race_ids:
-        try:
-            print(f"Reconstructing Race ID: {race_id}")
-            race = reconstruct_race(race_id, race_to_dog_index, all_participations)
-            print(race)  # Calls __repr__
-            print("\nDetailed Info:")
+    for race_id in list(sample_race_ids)[:10]:
+        race = Race.from_dogs(list(dogs.values()), race_id)
+        if race:
+            print("\n--- RACE INFO ---")
             race.print_info()
-            print("\n" + "=" * 50 + "\n")
-        except Exception as e:
-            print(f"Error processing race {race_id}: {e}")
+
+            print("\n--- DOG OBJECTS ---")
+            for dog in race.get_dogs(dogs):
+                dog.print_info()
+
+            print("\n--- TRACK INFO ---")
+            track = race.get_track(tracks)
+            if track:
+                track.print_info()
+
+            race_path = os.path.join(RACES_OUT, f"{race_id}.pkl")
+            race.save(race_path)
+            reloaded = Race.load(race_path)
+
+            assert race.race_id == reloaded.race_id
+            assert race.dog_ids == reloaded.dog_ids
+            assert race.track_name == reloaded.track_name
+            print(f"\n✔ Reloaded race {race.race_id} verified successfully.\n")
 
 if __name__ == "__main__":
-    test_race()
+    test_race_construction()

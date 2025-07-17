@@ -8,11 +8,6 @@ import threading
 from functools import lru_cache
 from typing import Optional, Dict, List
 
-# Add project root to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.join(script_dir, '..')
-sys.path.insert(0, parent_dir)
-
 from models.dog import Dog
 
 # Configuration

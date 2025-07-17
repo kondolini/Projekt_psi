@@ -1,223 +1,154 @@
 import os
 import pickle
-from datetime import datetime
-from typing import List, Optional
+from datetime import date, time
+from typing import List, Optional, Dict
 
 from models.track import Track
 from models.race_participation import RaceParticipation
 from models.dog import Dog
+import re
 
+def convert_sp_to_decimal(sp: Optional[str]) -> Optional[float]:
+    """
+    Convert a British-style starting price (SP) string to decimal odds.
+    Examples:
+        "5/2f" -> 3.5
+        "7/4j" -> 2.75
+        "evs" or "evens" -> 2.0
+        "3/1" -> 4.0
+    """
+    if not sp:
+        return None
+
+    sp = sp.strip().lower()
+
+    # Handle evens
+    if sp in {"evs", "evens"}:
+        return 2.0
+
+    # Remove trailing annotations like "f", "j", "p", etc.
+    sp_cleaned = re.match(r"(\d+)\s*/\s*(\d+)", sp)
+    if sp_cleaned:
+        num = int(sp_cleaned.group(1))
+        denom = int(sp_cleaned.group(2))
+        return round(1 + (num / denom), 2)
+
+    # Try to parse straight decimal or integer
+    try:
+        return float(re.match(r"^\d+(\.\d+)?", sp).group(0))
+    except Exception:
+        return None
 
 class Race:
     def __init__(
         self,
         race_id: str,
-        race_date: datetime = None,
-        race_time: datetime = None,
-        distance: int = None,
-        race_class: str = None,
-        category: str = None,
-        track_name: str = None,
-        odds_vec: List[float] = None,
-        race_time_vec: List[float] = None,
-        commentary_tags_vec: List[List[str]] = None,
-        dog_ids: List[str] = None,
+        race_date: date,
+        race_time: time,
+        distance: float,
+        race_class: str,
+        track_name: str,
+        dog_ids: List[str],
+        odds_vec: Optional[List[float]] = None,
+        race_time_vec: Optional[List[float]] = None,
+        commentary_tags_vec: Optional[List[List[str]]] = None,
+        category: Optional[str] = None,
         rainfall_7d: Optional[List[float]] = None,
         temperature: Optional[float] = None,
         humidity: Optional[float] = None,
-        track: Optional[Track] = None
     ):
         self.race_id = race_id
         self.race_date = race_date
         self.race_time = race_time
         self.distance = distance
         self.race_class = race_class
-        self.category = category
         self.track_name = track_name
+        self.dog_ids = dog_ids
         self.odds_vec = odds_vec or []
         self.race_time_vec = race_time_vec or []
         self.commentary_tags_vec = commentary_tags_vec or []
-        self.dog_ids = dog_ids or []
+        self.category = category
 
         self.rainfall_7d = rainfall_7d
         self.temperature = temperature
         self.humidity = humidity
-        
-        # New attributes for enhanced functionality
-        self.track = track
-        self.participations: List[RaceParticipation] = []
-        self.race_datetime = race_date  # Alias for consistency
-        self.race_distance = distance   # Alias for consistency
-        self.going = None
 
     @classmethod
-    def from_participations(cls, race_id: str, participations: List[RaceParticipation], track: Optional[Track] = None) -> "Race":
-        """Create a Race from a list of participations - enhanced version"""
-        if not participations:
-            raise ValueError("No participations provided to construct Race")
-        
-        # Sort participations by trap number
-        participations = sorted(participations, key=lambda p: p.trap_number if p.trap_number else 99)
-        
-        # Extract race metadata from first participation
+    def from_participations(cls, participations: List[RaceParticipation]) -> "Race":
+        assert participations, "No participations provided"
+        assert all(p.race_id == participations[0].race_id for p in participations), "Mismatched race_ids"
+
+        participations.sort(key=lambda p: p.trap_number or 0)
         p0 = participations[0]
-        
-        # Create race with all available data
-        race = cls(
-            race_id=race_id,
-            race_date=p0.race_datetime.date() if p0.race_datetime else None,
-            race_time=p0.race_datetime.time() if p0.race_datetime else None,
-            distance=int(p0.distance) if p0.distance else None,
+
+        odds_vec = [convert_sp_to_decimal(p.sp) for p in participations]
+        odds_vec = None if all(o is None for o in odds_vec) else odds_vec
+
+        return cls(
+            race_id=p0.race_id,
+            race_date=p0.race_datetime.date(),
+            race_time=p0.race_datetime.time(),
+            distance=p0.distance,
             race_class=p0.race_class,
-            category=getattr(p0, 'category', None),
             track_name=p0.track_name,
-            odds_vec=[getattr(p, 'sp', None) for p in participations],
-            race_time_vec=[p.run_time for p in participations],
-            commentary_tags_vec=[getattr(p, 'comment', '').split() for p in participations],
             dog_ids=[p.dog_id for p in participations],
-            track=track
+            odds_vec=odds_vec,
+            race_time_vec=[p.run_time for p in participations],
+            commentary_tags_vec=[[] for _ in participations],  # placeholder
+            category=getattr(p0, "category", None),
         )
-        
-        # Set additional attributes
-        race.participations = participations
-        race.race_datetime = p0.race_datetime
-        race.race_distance = p0.distance
-        race.going = p0.going
-        
-        return race
 
-    def add_participation(self, participation: RaceParticipation):
-        """Add a participation to this race"""
-        self.participations.append(participation)
-        
-        # Update dog_ids list
-        if participation.dog_id not in self.dog_ids:
-            self.dog_ids.append(participation.dog_id)
-        
-        # Set race metadata from first participation if not set
-        if not self.race_datetime and participation.race_datetime:
-            self.race_datetime = participation.race_datetime
-            self.race_date = participation.race_datetime.date()
-            self.race_time = participation.race_datetime.time()
-        if not self.race_distance and participation.distance:
-            self.race_distance = participation.distance
-            self.distance = int(participation.distance)
-        if not self.race_class and participation.race_class:
-            self.race_class = participation.race_class
-        if not self.going and participation.going:
-            self.going = participation.going
-        if not self.track_name and participation.track_name:
-            self.track_name = participation.track_name
+    @classmethod
+    def from_dogs(cls, dogs: List[Dog], race_id: str) -> Optional["Race"]:
+        participations = [dog.get_participation_by_race_id(race_id) for dog in dogs]
+        participations = [p for p in participations if p]
+        if not participations:
+            return None
+        return cls.from_participations(participations)
 
-    def get_winner(self) -> Optional[RaceParticipation]:
-        """Get the winning participation (position 1)"""
-        for participation in self.participations:
-            # Handle both string and numeric positions
-            pos = participation.position
-            if pos == "1" or pos == 1 or pos == 1.0:
-                return participation
+    def set_weather(self, rainfall_7d: List[float], temperature: float, humidity: float):
+        self.rainfall_7d = rainfall_7d
+        self.temperature = temperature
+        self.humidity = humidity
+
+    def get_track(self, track_lookup: Dict[str, Track]) -> Optional[Track]:
+        return track_lookup.get(self.track_name)
+
+    def get_dogs(self, dog_lookup: Dict[str, Dog]) -> List[Dog]:
+        return [dog_lookup[dog_id] for dog_id in self.dog_ids if dog_id in dog_lookup]
+
+    def get_dog_participation(self, dog_id: str, dog_lookup: Dict[str, Dog]) -> Optional[RaceParticipation]:
+        dog = dog_lookup.get(dog_id)
+        if dog:
+            return dog.get_participation_by_race_id(self.race_id)
         return None
 
-    def get_participants_count(self) -> int:
-        """Get number of participants in this race"""
-        return len(self.participations)
-
-    def __repr__(self):
-        track_name = self.track.name if self.track else (self.track_name or "Unknown Track")
-        date_str = self.race_datetime.strftime("%Y-%m-%d") if self.race_datetime else "Unknown Date"
-        return f"Race({self.race_id}, {track_name}, {date_str}, {len(self.participations)} dogs)"
-
-    def print_info(self):
-        """Print detailed race information with all participation details"""
-        winner = self.get_winner()
-        
-        print({
-            "race_id": self.race_id,
-            "race_datetime": self.race_datetime,
-            "track": self.track.name if self.track else self.track_name,
-            "distance": self.race_distance or self.distance,
-            "race_class": self.race_class,
-            "going": self.going,
-            "participants": len(self.participations),
-            "winner": winner.dog_id if winner else None
-        })
-        
-        # Print detailed participation information
-        print("\nDetailed Participants:")
-        print("-" * 80)
-        
-        # Sort participations by position for display
-        sorted_participations = sorted(self.participations, 
-                                     key=lambda p: float(p.position) if p.position and str(p.position).replace('.','').isdigit() else 99.0)
-        
-        for i, participation in enumerate(sorted_participations):
-            print(f"  {i+1}. Trap {participation.trap_number}: Dog {participation.dog_id}")
-            print(f"     Position: {participation.position}")
-            print(f"     Run Time: {participation.run_time}s" if participation.run_time else "     Run Time: N/A")
-            print(f"     Split Time: {participation.split_time}s" if participation.split_time else "     Split Time: N/A")
-            print(f"     Weight: {participation.weight}kg" if participation.weight else "     Weight: N/A")
-            print(f"     Starting Price: {participation.sp}" if participation.sp else "     Starting Price: N/A")
-            print(f"     Btn Distance: {participation.btn_distance}" if participation.btn_distance else "     Btn Distance: N/A")
-            print(f"     Comments: {participation.comment}" if participation.comment else "     Comments: None")
-            print(f"     Adjusted Time: {participation.adjusted_time}s" if participation.adjusted_time else "     Adjusted Time: N/A")
-            
-            # Show winner information if this dog won
-            if participation.winner_id:
-                print(f"     Winner ID: {participation.winner_id}")
-            
-            print()  # Empty line between dogs
-
-    def get_race_summary(self):
-        """Get a comprehensive race summary with all details"""
-        summary = {
-            'race_metadata': {
-                'race_id': self.race_id,
-                'race_datetime': self.race_datetime,
-                'track': self.track.name if self.track else self.track_name,
-                'distance': self.race_distance or self.distance,
-                'race_class': self.race_class,
-                'going': self.going,
-                'participants_count': len(self.participations)
-            },
-            'participants': [],
-            'race_statistics': {}
-        }
-        
-        # Add detailed participant information
-        for participation in self.participations:
-            participant_data = {
-                'dog_id': participation.dog_id,
-                'trap_number': participation.trap_number,
-                'position': participation.position,
-                'run_time': participation.run_time,
-                'split_time': participation.split_time,
-                'weight': participation.weight,
-                'starting_price': participation.sp,
-                'btn_distance': participation.btn_distance,
-                'comments': participation.comment,
-                'adjusted_time': participation.adjusted_time,
-                'winner_id': participation.winner_id
-            }
-            summary['participants'].append(participant_data)
-        
-        # Calculate race statistics
-        run_times = [p.run_time for p in self.participations if p.run_time]
-        if run_times:
-            summary['race_statistics'] = {
-                'fastest_time': min(run_times),
-                'slowest_time': max(run_times),
-                'average_time': sum(run_times) / len(run_times),
-                'winning_time': self.get_winner().run_time if self.get_winner() and self.get_winner().run_time else None
-            }
-        
-        return summary
-
-    @staticmethod
-    def save(race: "Race", path: str):
+    def save(self, path: str):
         with open(path, "wb") as f:
-            pickle.dump(race, f)
+            pickle.dump(self, f)
 
     @staticmethod
     def load(path: str) -> "Race":
         with open(path, "rb") as f:
             return pickle.load(f)
+
+    def __lt__(self, other):
+        return (self.race_date, self.race_time) < (other.race_date, other.race_time)
+
+    def __repr__(self):
+        return f"<Race {self.race_id} @ {self.track_name} on {self.race_date} - {len(self.dog_ids)} dogs>"
+
+    def print_info(self):
+        print(f"Race ID: {self.race_id}")
+        print(f"Date: {self.race_date}, Time: {self.race_time}")
+        print(f"Track: {self.track_name}, Distance: {self.distance}m")
+        print(f"Class: {self.race_class}, Category: {self.category}")
+        print(f"Dogs: {self.dog_ids}")
+        print(f"Odds: {self.odds_vec}")
+        print(f"Race Times: {self.race_time_vec}")
+        if self.rainfall_7d:
+            print(f"Rainfall (7d): {self.rainfall_7d}")
+        if self.temperature is not None:
+            print(f"Temperature: {self.temperature}")
+        if self.humidity is not None:
+            print(f"Humidity: {self.humidity}")

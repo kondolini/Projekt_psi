@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from .race_participation import RaceParticipation
+from models.race_participation import RaceParticipation
 
 
 class Dog:
