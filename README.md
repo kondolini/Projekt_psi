@@ -6,6 +6,10 @@ To ensure realistic forecasting, we model races **chronologically**, maintaining
 
 ---
 
+Here is the **modified section of the README**, incorporating the newly implemented `Track` class and the new grouped-saving framework for `Dog` and `RaceParticipation` objects:
+
+---
+
 ## 🧱 Core Data Classes
 
 ### ✅ 🐕 `Dog` class
@@ -19,6 +23,7 @@ Defines a greyhound and optionally maintains dynamic race data.
 * Supports `add_participations()` to bulk-add races
 * Can be serialized/deserialized via `pickle`
 * Construction pipeline available in `build_and_save_dogs.py`
+* **🔄 Dogs are now saved in grouped `.pkl` files based on ID hash buckets** (e.g. 400–499, 500–599)
 
 **🔜 Planned:**
 
@@ -37,12 +42,34 @@ Represents a **dog’s entry in a single race**.
 * `race_id`, `trap_number`, `finish_time`, `position`, `odds`, etc.
 * Structured `commentary_tags` as list of strings
 * Built from raw scraped CSV rows via `parse_race_participation()`
-* Serialized individually to `data/race_participations/`
+* **Serialized using bucketed `.pkl` files based on race ID mod hash**
 
 **✅ Status:**
 
 * Used in `Dog`'s `participations`
 * Core parsing logic complete
+
+---
+
+### ✅ 🏟 `Track` class
+
+Defines the track a race was held on.
+
+**✅ Implemented Fields:**
+
+* `name`: string name of the track
+* `race_ids`: list of race IDs run at this track
+* `average_times`: dict mapping distances (in meters) to average finish times
+* `race_count`: total number of races seen
+* **Built dynamically from race participations** using `Track.from_race_participations()`
+* **Serialized to individual files per track name**
+
+**🔜 Planned Extensions:**
+
+* `location`, `surface_type`, `geometry`
+* Track bias features: drainage, sand composition
+
+Tracks are cached and saved during test parsing or batch preprocessing.
 
 ---
 
@@ -65,21 +92,6 @@ Encapsulates a full race event, across **all dogs**.
 * `Track` object
 
 This will be constructed later using `race_to_dog_index.pkl` and the `Dog` participations.
-
----
-
-### 🔜 🏟 `Track` class
-
-Defines the track a race was held on.
-
-**🔜 To Implement:**
-
-* Fields:
-
-  * `name`, `location`, `surface_type`, `geometry`
-  * Optional: drainage, sand composition, track bias
-
-Will be linked to `Race` objects once track metadata becomes available.
 
 ---
 
