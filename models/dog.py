@@ -47,3 +47,16 @@ class Dog:
 
     def __repr__(self):
         return f"Dog({self.id}, {self.name})"
+    
+    def print_info(self):
+        print({
+            "id": self.id,
+            "name": self.name,
+            "birth_date": self.birth_date,
+            "trainer": self.trainer,
+            "color": self.color,
+            "weight": self.weight,
+            "sire": self.sire.id if self.sire else None,
+            "dam": self.dam.id if self.dam else None,
+            "participations_count": len(self.race_participations)
+            })

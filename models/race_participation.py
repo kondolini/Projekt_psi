@@ -24,6 +24,7 @@ class RaceParticipation:
         distance: Optional[float] = None,
         going: Optional[str] = None,
         win_time: Optional[float] = None,
+        meeting_id: Optional[str] = None,
     ):
         self.dog_id = dog_id
         self.race_id = race_id
@@ -45,12 +46,36 @@ class RaceParticipation:
         self.distance = distance
         self.going = going
         self.win_time = win_time
+        self.meeting_id = meeting_id
 
     def __lt__(self, other):
         return self.race_datetime < other.race_datetime
 
     def __repr__(self):
         return f"RaceParticipation({self.dog_id} @ {self.race_datetime.strftime('%Y-%m-%d %H:%M')})"
+    
+    def print_info(self):
+        print({
+            "dog_id": self.dog_id,
+            "race_id": self.race_id,
+            "race_datetime": self.race_datetime,
+            "trap_number": self.trap_number,
+            "sp": self.sp,
+            "position": self.position,
+            "btn_distance": self.btn_distance,
+            "split_time": self.split_time,
+            "comment": self.comment,
+            "run_time": self.run_time,
+            "adjusted_time": self.adjusted_time,
+            "weight": self.weight,
+            "winner_id": self.winner_id,
+            "track_name": self.track_name,
+            "race_class": self.race_class,
+            "distance": self.distance,
+            "going": self.going,
+            "win_time": self.win_time,
+            "meeting_id": self.meeting_id,  # <-- Added field
+        })
 
     def to_pickle(self, path: str):
         with open(path, "wb") as f:
@@ -109,4 +134,5 @@ def parse_race_participation(row: dict) -> Optional[RaceParticipation]:
         distance=safe_float(row.get("raceDistance")),
         going=row.get("raceGoing"),
         win_time=safe_float(row.get("raceWinTime")),
+        meeting_id=row.get("meetingId"),  # <-- Added extraction
     )
