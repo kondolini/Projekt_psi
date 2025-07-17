@@ -17,6 +17,14 @@ class Track:
 
     def __repr__(self):
         return f"Track(name={self.name})"
+    
+    def print_info(self):
+        print({
+            "name": self.name,
+            "surface_type": self.surface_type,
+            "geometry": self.geometry,
+            "notes": self.notes,
+        }) 
 
     @classmethod
     def from_race_participations(cls, participations: list[RaceParticipation]) -> "Track":
