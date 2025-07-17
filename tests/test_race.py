@@ -39,55 +39,52 @@ def load_participation_buckets() -> list:
                 participations.extend(bucket)
     return participations
 
-def load_tracks() -> dict[str, Track]:
-    tracks = {}
-    for fname in os.listdir(tracks_dir):
-        if fname.endswith(".pkl"):
-            with open(os.path.join(tracks_dir, fname), "rb") as f:
-                track = pickle.load(f)
-                tracks[track.name] = track
-    return tracks
+def load_track_by_name(name: str) -> Track:
+    path = os.path.join(tracks_dir, f"{name}.pkl")
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
-# ---------- Race Construction ----------
+def reconstruct_race(race_id: str, race_to_dog_index: dict[str, list[str]], all_participations: list[RaceParticipation]) -> Race:
+    dog_ids = race_to_dog_index[race_id]
+    dogs = [load_dog(did) for did in dog_ids]
 
-def build_races(dog_lookup: dict[str, Dog], participations: list) -> list[Race]:
-    race_groups = {}
-    for p in participations:
-        race_groups.setdefault(p.race_id, []).append(p)
+    participations = []
+    track_name = None
+    for dog in dogs:
+        part = dog.get_participation_by_race_id(race_id)
+        if part:
+            participations.extend(part)
+            if part.track_name:
+                track_name = part.track_name
 
-    races = []
-    for race_id, parts in tqdm(race_groups.items(), desc="Constructing races"):
-        try:
-            race = Race.from_participations(parts)
-            races.append(race)
-        except Exception as e:
-            print(f"Skipping race {race_id}: {e}")
-    return races
+    if not participations:
+        raise ValueError(f"No participation data for race_id={race_id}")
 
-# ---------- Main Test Function ----------
+    track = load_track_by_name(track_name) if track_name else None
+    race = Race.from_participations(race_id, participations, track=track)
+    return race
 
 def test_race():
-    print("Loading dogs...")
-    dog_lookup = load_dog_buckets()
+    print("Loading race_to_dog_index...")
+    with open(race_to_dog_index_path, "rb") as f:
+        race_to_dog_index = pickle.load(f)
 
-    print("Loading race participations...")
-    participations = load_participation_buckets()
+    print("Loading all participations...")
+    all_participations = load_all_participations()
 
-    print("Loading tracks...")
-    track_lookup = load_tracks()
+    sample_race_ids = random.sample(list(race_to_dog_index.keys()), 3)
 
-    print("Building races...")
-    races = build_races(dog_lookup, participations)
-
-    print(f"Saving {len(races)} races to {output_dir}...")
-    for race in tqdm(races, desc="Saving races"):
-        path = os.path.join(output_dir, f"{race.race_id}.pkl")
-        race.save(path)
-
-    print("\nSample race info:\n")
-    for race in races[:5]:
-        race.print_info()
-        print()
+    print("\n--- Testing Race Reconstruction ---\n")
+    for race_id in sample_race_ids:
+        try:
+            print(f"Reconstructing Race ID: {race_id}")
+            race = reconstruct_race(race_id, race_to_dog_index, all_participations)
+            print(race)  # Calls __repr__
+            print("\nDetailed Info:")
+            race.print_info()
+            print("\n" + "=" * 50 + "\n")
+        except Exception as e:
+            print(f"Error processing race {race_id}: {e}")
 
 if __name__ == "__main__":
     test_race()
