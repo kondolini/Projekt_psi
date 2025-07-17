@@ -54,11 +54,11 @@ def reconstruct_race(race_id: str, race_to_dog_index: dict[str, list[str]], all_
     participations = []
     track_name = None
     for dog in dogs:
-        parts = dog.get_participations_by_race_id(race_id)
-        if parts:
-            participations.extend(parts)
-            if parts[0].track_name:
-                track_name = parts[0].track_name
+        part = dog.get_participation_by_race_id(race_id)
+        if part:
+            participations.extend(part)
+            if part.track_name:
+                track_name = part.track_name
 
     if not participations:
         raise ValueError(f"No participation data for race_id={race_id}")
