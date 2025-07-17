@@ -102,9 +102,11 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
         os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from scraping
         os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
         os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative relative path
+        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Try with data_construction as base
     ]
     
     for bucket_path in possible_paths:
+        abs_path = os.path.abspath(bucket_path)
         if os.path.exists(bucket_path):
             try:
                 with open(bucket_path, "rb") as f:
@@ -116,7 +118,20 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
     print(f"❌ Bucket {bucket_idx} not found in any location")
     print(f"💡 Looking for buckets in:")
     for path in possible_paths:
-        print(f"  - {path} ({'✅' if os.path.exists(path) else '❌'})")
+        abs_path = os.path.abspath(path)
+        print(f"  - {path} -> {abs_path} ({'✅' if os.path.exists(path) else '❌'})")
+    
+    # Debug: Show what files actually exist in current directory
+    print(f"💡 Current working directory: {os.getcwd()}")
+    if os.path.exists("data"):
+        print(f"💡 Contents of data/ directory:")
+        for item in os.listdir("data"):
+            item_path = os.path.join("data", item)
+            if os.path.isdir(item_path):
+                files = os.listdir(item_path)
+                bucket_files = [f for f in files if f.startswith('dogs_bucket_')]
+                print(f"  📁 {item}: {len(bucket_files)} bucket files")
+    
     return None
 
 def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool = False):
@@ -603,6 +618,8 @@ def test_single_dog(dog_id: str):
     
     # Find which bucket this dog is in
     bucket_idx = get_bucket_index(dog_id)
+    print(f"💡 Dog {dog_id} should be in bucket {bucket_idx}")
+    
     dogs_dict = load_dogs_bucket(bucket_idx)
     
     if not dogs_dict:
@@ -613,7 +630,7 @@ def test_single_dog(dog_id: str):
     sample_keys = list(dogs_dict.keys())[:10]
     print(f"💡 Available dogs in bucket {bucket_idx}: {sample_keys}")
     print(f"💡 Looking for dog_id: '{dog_id}' (type: {type(dog_id)})")
-    print(f"💡 Sample key type: {type(sample_keys[0]) if sample_keys else 'None'}")
+    print(f"💡 Total dogs in bucket: {len(dogs_dict)}")
     
     # Ensure both dog_id and keys are strings for comparison
     dog_id = str(dog_id)
@@ -683,6 +700,10 @@ def view_enhanced_dog(dog_id: str):
     print(f"🔍 VIEWING ENHANCED DOG: {dog_id}")
     print("=" * 40)
     
+    # Debug: Calculate and show bucket info first
+    bucket_idx = get_bucket_index(dog_id)
+    print(f"💡 Dog {dog_id} should be in bucket {bucket_idx}")
+    
     # Try to load from enhanced folder first
     enhanced_dog = load_enhanced_dog_by_id(dog_id)
     
@@ -728,18 +749,35 @@ def view_enhanced_dog(dog_id: str):
     else:
         print(f"❌ Enhanced dog {dog_id} not found")
         
-        # Try to load from original folder
-        original_dogs = load_dogs_bucket(get_bucket_index(dog_id))
-        if original_dogs and dog_id in original_dogs:
-            print(f"💡 Found in original dogs folder (not enhanced yet)")
-            orig = original_dogs[dog_id]
-            print(f"  - Name: '{orig.name if orig.name else 'No name'}'")
-            print(f"  - Trainer: '{orig.trainer if orig.trainer else 'No trainer'}'")
-            print(f"  - Races: {len(orig.race_participations)}")
-            return orig
+        # Try to load from original folder - but use the correct bucket
+        original_dogs = load_dogs_bucket(bucket_idx)
+        if original_dogs:
+            # Convert both to strings for comparison
+            str_dog_id = str(dog_id)
+            if str_dog_id in original_dogs:
+                print(f"💡 Found in original dogs folder (not enhanced yet)")
+                orig = original_dogs[str_dog_id]
+                print(f"  - Name: '{orig.name if orig.name else 'No name'}'")
+                print(f"  - Trainer: '{orig.trainer if orig.trainer else 'No trainer'}'")
+                print(f"  - Races: {len(orig.race_participations)}")
+                return orig
+            else:
+                # Try with different key types
+                for key in original_dogs.keys():
+                    if str(key) == str_dog_id:
+                        print(f"💡 Found in original dogs folder with key '{key}' (not enhanced yet)")
+                        orig = original_dogs[key]
+                        print(f"  - Name: '{orig.name if orig.name else 'No name'}'")
+                        print(f"  - Trainer: '{orig.trainer if orig.trainer else 'No trainer'}'")
+                        print(f"  - Races: {len(orig.race_participations)}")
+                        return orig
+                
+                print(f"❌ Dog {dog_id} not found in bucket {bucket_idx}")
+                print(f"💡 Available dogs in bucket (first 10): {list(original_dogs.keys())[:10]}")
         else:
-            print(f"❌ Dog {dog_id} not found in either original or enhanced folders")
-            return None
+            print(f"❌ Could not load bucket {bucket_idx}")
+            
+        return None
 
 def compare_enhancement_results():
     """Compare results between original and enhanced dogs"""
@@ -902,6 +940,147 @@ def create_dog_buckets_from_csv():
         print(f"❌ Error running build_and_save_dogs.py: {e}")
         return False
 
+def check_enhancement_progress():
+    """Check which buckets have been enhanced and overall progress"""
+    print("📊 CHECKING ENHANCEMENT PROGRESS")
+    print("=" * 50)
+    
+    enhanced_buckets = 0
+    total_buckets = NUM_BUCKETS
+    
+    print(f"🔍 Checking {total_buckets} buckets for enhancement status...")
+    
+    for bucket_idx in range(NUM_BUCKETS):
+        enhanced_path = os.path.join(enhanced_dogs_dir, f"dogs_bucket_{bucket_idx}.pkl")
+        original_path = os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl")
+        
+        enhanced_exists = os.path.exists(enhanced_path)
+        original_exists = os.path.exists(original_path)
+        
+        if enhanced_exists:
+            enhanced_buckets += 1
+            if bucket_idx < 10:  # Show details for first 10 buckets
+                try:
+                    with open(enhanced_path, "rb") as f:
+                        dogs_dict = pickle.load(f)
+                    dogs_with_names = sum(1 for dog in dogs_dict.values() if dog.name and dog.name != '')
+                    print(f"  ✅ Bucket {bucket_idx:2d}: {len(dogs_dict)} dogs, {dogs_with_names} with names")
+                except Exception as e:
+                    print(f"  ⚠️ Bucket {bucket_idx:2d}: Error reading - {e}")
+        elif original_exists:
+            if bucket_idx < 10:
+                print(f"  ⏳ Bucket {bucket_idx:2d}: Original exists, not enhanced yet")
+        else:
+            if bucket_idx < 10:
+                print(f"  ❌ Bucket {bucket_idx:2d}: No data found")
+    
+    print(f"\n📈 Enhancement Progress:")
+    print(f"  - Buckets enhanced: {enhanced_buckets}/{total_buckets}")
+    print(f"  - Progress: {(enhanced_buckets/total_buckets)*100:.1f}%")
+    
+    if enhanced_buckets == 0:
+        print(f"\n💡 No buckets have been enhanced yet. Run option 2 to test first!")
+    elif enhanced_buckets < total_buckets:
+        print(f"\n💡 You're making progress! {total_buckets - enhanced_buckets} buckets remaining.")
+        print(f"💡 Run option 6 to enhance all remaining buckets.")
+    else:
+        print(f"\n🎉 All buckets have been enhanced!")
+
+def find_dogs_by_name_pattern(name_pattern: str, limit: int = 10):
+    """Find dogs whose names contain a pattern"""
+    print(f"🔍 SEARCHING FOR DOGS WITH NAME CONTAINING: '{name_pattern}'")
+    print("=" * 60)
+    
+    found_dogs = []
+    
+    for bucket_idx in range(NUM_BUCKETS):
+        # Try enhanced buckets first
+        enhanced_path = os.path.join(enhanced_dogs_dir, f"dogs_bucket_{bucket_idx}.pkl")
+        if os.path.exists(enhanced_path):
+            try:
+                with open(enhanced_path, "rb") as f:
+                    dogs_dict = pickle.load(f)
+                
+                for dog_id, dog in dogs_dict.items():
+                    if dog.name and name_pattern.lower() in dog.name.lower():
+                        found_dogs.append({
+                            'dog_id': dog_id,
+                            'name': dog.name,
+                            'trainer': dog.trainer or 'Unknown',
+                            'bucket': bucket_idx,
+                            'races': len(dog.race_participations),
+                            'enhanced': True
+                        })
+                        
+                        if len(found_dogs) >= limit:
+                            break
+            except:
+                continue
+        
+        if len(found_dogs) >= limit:
+            break
+    
+    # If not enough found in enhanced, check original buckets
+    if len(found_dogs) < limit:
+        for bucket_idx in range(NUM_BUCKETS):
+            original_dogs = load_dogs_bucket(bucket_idx)
+            if original_dogs:
+                for dog_id, dog in original_dogs.items():
+                    if dog.name and name_pattern.lower() in dog.name.lower():
+                        # Check if already found in enhanced
+                        if not any(f['dog_id'] == dog_id for f in found_dogs):
+                            found_dogs.append({
+                                'dog_id': dog_id,
+                                'name': dog.name,
+                                'trainer': dog.trainer or 'Unknown',
+                                'bucket': bucket_idx,
+                                'races': len(dog.race_participations),
+                                'enhanced': False
+                            })
+                            
+                            if len(found_dogs) >= limit:
+                                break
+            
+            if len(found_dogs) >= limit:
+                break
+    
+    print(f"📋 Found {len(found_dogs)} dogs:")
+    for i, dog_info in enumerate(found_dogs):
+        status = "✅ Enhanced" if dog_info['enhanced'] else "⏳ Original"
+        print(f"  {i+1}. Dog {dog_info['dog_id']}: {dog_info['name']}")
+        print(f"     - Trainer: {dog_info['trainer']}")
+        print(f"     - Bucket: {dog_info['bucket']}, Races: {dog_info['races']}")
+        print(f"     - Status: {status}")
+        print()
+    
+    return found_dogs
+
+def quick_bucket_stats(bucket_idx: int):
+    """Show quick stats for a specific bucket"""
+    print(f"📊 BUCKET {bucket_idx} STATISTICS")
+    print("=" * 40)
+    
+    dogs_dict = load_dogs_bucket(bucket_idx)
+    if not dogs_dict:
+        print(f"❌ Bucket {bucket_idx} not found")
+        return
+    
+    total_dogs = len(dogs_dict)
+    dogs_with_names = sum(1 for dog in dogs_dict.values() if dog.name and dog.name != '')
+    dogs_with_trainers = sum(1 for dog in dogs_dict.values() if dog.trainer and dog.trainer != '')
+    dogs_needing_enhancement = sum(1 for dog in dogs_dict.values() if dog_needs_enhancement(dog))
+    
+    print(f"  Total dogs: {total_dogs}")
+    print(f"  Dogs with names: {dogs_with_names} ({(dogs_with_names/total_dogs)*100:.1f}%)")
+    print(f"  Dogs with trainers: {dogs_with_trainers} ({(dogs_with_trainers/total_dogs)*100:.1f}%)")
+    print(f"  Dogs needing enhancement: {dogs_needing_enhancement} ({(dogs_needing_enhancement/total_dogs)*100:.1f}%)")
+    
+    # Show sample dogs
+    print(f"\n📋 Sample dogs in bucket {bucket_idx}:")
+    for i, (dog_id, dog) in enumerate(list(dogs_dict.items())[:5]):
+        status = "✅" if not dog_needs_enhancement(dog) else "❌"
+        print(f"  {status} Dog {dog_id}: {dog.name or 'No name'} (Trainer: {dog.trainer or 'No trainer'})")
+
 if __name__ == "__main__":
     print("🐕 Dog Enhancement Tool")
     print("Enhances dogs with names, trainers, and other missing data using GBGB API")
@@ -943,14 +1122,16 @@ if __name__ == "__main__":
     print("2. Test enhancement (1 bucket)")
     print("3. Test single dog")
     print("4. Check data structure")
-    print("5. Test API methods")
+    print("5. Check enhancement progress")  # New option
     print("6. Enhance all dogs")
     print("7. View enhanced dog")
     print("8. Compare enhancement results")
     print("9. List sample enhanced dogs")
+    print("10. Search dogs by name")  # New option
+    print("11. Quick bucket stats")  # New option
     print()
     
-    choice = input("Enter choice (1-9): ").strip()
+    choice = input("Enter choice (1-11): ").strip()
     
     if choice == '1':
         get_enhancement_stats()
@@ -962,7 +1143,7 @@ if __name__ == "__main__":
     elif choice == '4':
         check_data_structure()
     elif choice == '5':
-        print("❌ Test API methods not implemented yet")
+        check_enhancement_progress()
     elif choice == '6':
         enhance_all_dogs()
     elif choice == '7':
@@ -974,5 +1155,14 @@ if __name__ == "__main__":
         count = input("How many dogs to show (default 10): ").strip()
         count = int(count) if count.isdigit() else 10
         list_sample_enhanced_dogs(count)
+    elif choice == '10':
+        name_pattern = input("Enter name pattern to search: ").strip()
+        find_dogs_by_name_pattern(name_pattern)
+    elif choice == '11':
+        bucket_num = input("Enter bucket number (0-99): ").strip()
+        if bucket_num.isdigit():
+            quick_bucket_stats(int(bucket_num))
+        else:
+            print("Invalid bucket number")
     else:
         print("Invalid choice")
