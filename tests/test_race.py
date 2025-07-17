@@ -14,11 +14,11 @@ from models.dog import Dog
 from models.track import Track
 from models.race_participation import RaceParticipation
 
-# Paths
-dogs_dir = "data/dogs"
-participations_dir = "data/race_participations"
-tracks_dir = "data/tracks"
-unified_dir = "data/unified"
+# Paths - Updated to use enhanced buckets
+dogs_dir = "../data/dogs_enhanced"  # ← Changed to enhanced buckets
+participations_dir = "../data/race_participations"
+tracks_dir = "../data/tracks"
+unified_dir = "../data/unified"
 race_to_dog_index_path = os.path.join(unified_dir, "race_to_dog_index.pkl")
 
 NUM_BUCKETS = 100
@@ -94,45 +94,72 @@ def test_race():
     print("Loading all participations...")
     all_participations = load_all_participations()
 
-    # Filter race IDs to only include ones that have dogs
+    # Only test races with dogs from buckets 0, 1, and 2
+    available_buckets = [0, 1, 2]
     valid_race_ids = []
-    print("Finding valid race IDs with existing dogs...")
     
-    for race_id, dog_ids in list(race_to_dog_index.items())[:50]:  # Check more races
+    print(f"Finding valid race IDs with dogs from buckets {available_buckets}...")
+    
+    for race_id, dog_ids in race_to_dog_index.items():
         try:
-            # Try to load the first dog to see if bucket exists
-            first_dog_id = dog_ids[0]
-            bucket = get_bucket_index(first_dog_id)
-            path = os.path.join(dogs_dir, f"dogs_bucket_{bucket}.pkl")
+            # Check if ALL dogs in this race are from available buckets
+            dog_buckets = [get_bucket_index(dog_id) for dog_id in dog_ids]
             
-            if os.path.exists(path):
-                with open(path, "rb") as f:
-                    bucket_data = pickle.load(f)
-                if first_dog_id in bucket_data:
-                    # Also check if the dog actually has participations for this race
-                    dog = bucket_data[first_dog_id]
+            # Only proceed if all dogs are from buckets 0, 1, or 2
+            if all(bucket in available_buckets for bucket in dog_buckets):
+                # Verify the bucket files exist and contain the dogs
+                all_dogs_exist = True
+                for dog_id in dog_ids:
+                    bucket = get_bucket_index(dog_id)
+                    path = os.path.join(dogs_dir, f"dogs_bucket_{bucket}.pkl")
+                    
+                    if not os.path.exists(path):
+                        all_dogs_exist = False
+                        break
+                    
+                    with open(path, "rb") as f:
+                        bucket_data = pickle.load(f)
+                    if dog_id not in bucket_data:
+                        all_dogs_exist = False
+                        break
+                    
+                    # Check if dog has participations for this race
+                    dog = bucket_data[dog_id]
                     dog_participations = dog.get_participation_by_race_id(race_id)
-                    if dog_participations:  # Only add if dog has participations for this race
-                        valid_race_ids.append(race_id)
-                        if len(valid_race_ids) >= 3:  # Test with 3 races for now
-                            break
+                    if not dog_participations:
+                        all_dogs_exist = False
+                        break
+                
+                if all_dogs_exist:
+                    valid_race_ids.append(race_id)
+                    print(f"✅ Race {race_id}: Dogs {dog_ids} (buckets {dog_buckets})")
+                    
+                    if len(valid_race_ids) >= 5:  # Test with 5 races
+                        break
+                        
         except Exception as e:
             continue
     
     if not valid_race_ids:
-        print("❌ No valid race IDs found with existing dog data and participations")
-        print("💡 This might mean:")
-        print("   - The dog buckets haven't been created yet (run build_and_save_dogs.py)")
-        print("   - The race participation data is missing")
-        print("   - There's a mismatch between race IDs and dog participation data")
+        print("❌ No valid race IDs found with dogs from available buckets")
+        print("💡 Debug info:")
         
-        # Debug: Show what we have
-        print(f"\n🔍 Debug info:")
-        print(f"   - race_to_dog_index has {len(race_to_dog_index)} races")
-        print(f"   - Dogs directory exists: {os.path.exists(dogs_dir)}")
+        # Show some sample races and their required buckets
+        print("\nSample races and their required buckets:")
+        for race_id, dog_ids in list(race_to_dog_index.items())[:10]:
+            dog_buckets = [get_bucket_index(dog_id) for dog_id in dog_ids]
+            status = "✅" if all(b in available_buckets for b in dog_buckets) else "❌"
+            print(f"{status} Race {race_id}: Dogs {dog_ids[:3]}... → Buckets {dog_buckets}")
+        
+        # Check what bucket files actually exist
+        existing_buckets = []
         if os.path.exists(dogs_dir):
-            bucket_files = [f for f in os.listdir(dogs_dir) if f.startswith('dogs_bucket_')]
-            print(f"   - Found {len(bucket_files)} dog bucket files")
+            for i in range(100):
+                bucket_path = os.path.join(dogs_dir, f"dogs_bucket_{i}.pkl")
+                if os.path.exists(bucket_path):
+                    existing_buckets.append(i)
+        
+        print(f"\nExisting bucket files: {existing_buckets[:10]}...")
         return
 
     print(f"Found {len(valid_race_ids)} valid race IDs for testing")
@@ -142,7 +169,8 @@ def test_race():
         try:
             print(f"Reconstructing Race ID: {race_id}")
             dog_ids = race_to_dog_index[race_id]
-            print(f"Dogs in race: {dog_ids}")
+            dog_buckets = [get_bucket_index(dog_id) for dog_id in dog_ids]
+            print(f"Dogs in race: {dog_ids} (buckets: {dog_buckets})")
             
             race = reconstruct_race(race_id, race_to_dog_index, all_participations)
             print(race)  # Calls __repr__
@@ -165,7 +193,8 @@ def test_race():
             
         except Exception as e:
             print(f"Error processing race {race_id}: {e}")
-            print(f"Dog IDs for this race: {race_to_dog_index.get(race_id, [])}")
+            dog_buckets = [get_bucket_index(dog_id) for dog_id in race_to_dog_index.get(race_id, [])]
+            print(f"Dog IDs for this race: {race_to_dog_index.get(race_id, [])} (buckets: {dog_buckets})")
             print()
 
 if __name__ == "__main__":
