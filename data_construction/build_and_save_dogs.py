@@ -12,6 +12,7 @@ parent_dir = os.path.join(script_dir, '..')
 sys.path.insert(0, parent_dir)
 
 from models.dog import Dog
+from models.track import Track
 from models.race_participation import parse_race_participation
 
 # Config
@@ -20,12 +21,14 @@ NUM_BUCKETS = 100
 # Paths
 data_dir = "data/scraped"
 dogs_output_dir = "data/dogs"
+tracks_output_dir = "data/tracks"
 participation_output_dir = "data/race_participations"
 unified_dir = "data/unified"
 unified_race_index_path = os.path.join(unified_dir, "race_to_dog_index.pkl")
 unified_participation_index_path = os.path.join(unified_dir, "race_index.pkl")
 
 os.makedirs(dogs_output_dir, exist_ok=True)
+os.makedirs(tracks_output_dir, exist_ok=True)
 os.makedirs(participation_output_dir, exist_ok=True)
 os.makedirs(unified_dir, exist_ok=True)
 
@@ -42,6 +45,18 @@ def load_dog_by_id(dog_id: str) -> Optional[Dog]:
         bucket_data = pickle.load(f)
     return bucket_data.get(dog_id)
 
+def save_dog(dog: Dog):
+    bucket = get_bucket_index(dog.id)
+    path = os.path.join(dogs_output_dir, f"dogs_bucket_{bucket}.pkl")
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            bucket_data = pickle.load(f)
+    else:
+        bucket_data = {}
+    bucket_data[dog.id] = dog
+    with open(path, "wb") as f:
+        pickle.dump(bucket_data, f)
+
 # Main function
 def build_and_save_dogs():
     df = pd.read_csv(os.path.join(data_dir, "scraped_data.csv"))
@@ -52,8 +67,9 @@ def build_and_save_dogs():
 
     dog_buckets = defaultdict(dict)
     participation_buckets = defaultdict(list)
+    track_cache = {}
 
-    for dog_id, group in tqdm(grouped):
+    for dog_id, group in tqdm(grouped, desc="Processing dogs"):
         dog = Dog(dog_id=dog_id)
         participations = []
 
@@ -69,6 +85,12 @@ def build_and_save_dogs():
             # Indexing
             race_to_dog_index[participation.race_id].append(dog_id)
 
+            # Track caching
+            track_name = participation.track_name
+            if track_name and track_name not in track_cache:
+                track = Track.from_race_participations([participation])
+                track_cache[track_name] = track
+
         dog.add_participations(participations)
         dog_buckets[get_bucket_index(dog_id)][dog_id] = dog
 
@@ -82,13 +104,18 @@ def build_and_save_dogs():
         with open(os.path.join(participation_output_dir, f"participations_bucket_{idx}.pkl"), "wb") as f:
             pickle.dump(part_list, f)
 
+    # Save tracks
+    for name, track in track_cache.items():
+        path = os.path.join(tracks_output_dir, f"{name}.pkl")
+        with open(path, "wb") as f:
+            pickle.dump(track, f)
+
     # Save unified indexes
     with open(unified_race_index_path, "wb") as f:
         pickle.dump(dict(race_to_dog_index), f)
 
     with open(unified_participation_index_path, "wb") as f:
         pickle.dump(dict(race_to_participation_files), f)
-
 
 if __name__ == "__main__":
     build_and_save_dogs()
