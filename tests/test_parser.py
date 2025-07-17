@@ -2,6 +2,8 @@ import os
 import sys
 import pickle
 import pandas as pd
+import shutil
+import time
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -15,7 +17,8 @@ from models.track import Track
 from models.race_participation import parse_race_participation
 
 # Parameters
-NUM_BUCKETS = 10  # Only 10 buckets for testing 100 rows
+NUM_BUCKETS = 10
+ROWS_PER_TEST = 10_000  # Now using 10,000 rows
 
 # Paths
 data_dir = "data/scraped"
@@ -24,39 +27,35 @@ dogs_output_dir = os.path.join(test_data_dir, "dogs")
 tracks_output_dir = os.path.join(test_data_dir, "tracks")
 participation_output_dir = os.path.join(test_data_dir, "race_participations")
 
-# Ensure dirs
-os.makedirs(dogs_output_dir, exist_ok=True)
-os.makedirs(tracks_output_dir, exist_ok=True)
-os.makedirs(participation_output_dir, exist_ok=True)
+def ensure_dirs():
+    os.makedirs(dogs_output_dir, exist_ok=True)
+    os.makedirs(tracks_output_dir, exist_ok=True)
+    os.makedirs(participation_output_dir, exist_ok=True)
 
-# Helper
+def clean_test_data():
+    shutil.rmtree(test_data_dir, ignore_errors=True)
+
 def get_bucket_index(dog_id: str) -> int:
     return int(dog_id) % NUM_BUCKETS
 
-def test_parser():
-    df = pd.read_csv(os.path.join(data_dir, "scraped_data.csv"))
-    df = df.head(100)
-
+def run_test(df: pd.DataFrame):
+    ensure_dirs()
     dog_buckets = defaultdict(dict)
     participation_buckets = defaultdict(list)
     track_cache = {}
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing rows"):
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing"):
         participation = parse_race_participation(row)
         if not participation:
             continue
 
-        # DOG
         dog_id = participation.dog_id
         bucket_idx = get_bucket_index(dog_id)
         dog = dog_buckets[bucket_idx].get(dog_id) or Dog(dog_id=dog_id)
         dog.add_participation(participation)
         dog_buckets[bucket_idx][dog_id] = dog
-
-        # PARTICIPATION
         participation_buckets[bucket_idx].append(participation)
 
-        # TRACK
         track_name = participation.track_name
         if track_name and track_name not in track_cache:
             track = Track.from_race_participations([participation])
@@ -78,28 +77,34 @@ def test_parser():
         with open(path, "wb") as f:
             pickle.dump(track, f)
 
-    # Display a few
-    print("\n--- Example Saved Objects ---")
+def test_parser():
+    csv_path = os.path.join(data_dir, "scraped_data.csv")
+    if not os.path.exists(csv_path):
+        print("CSV file not found.")
+        return
 
-    dog_files = os.listdir(dogs_output_dir)[:1]
-    for f in dog_files:
-        with open(os.path.join(dogs_output_dir, f), "rb") as file:
-            dogs = pickle.load(file)
-            for d in list(dogs.values())[:2]:
-                print("Dog:", d)
+    df = pd.read_csv(csv_path)
+    if len(df) < ROWS_PER_TEST:
+        print(f"Not enough data rows. Only {len(df)} rows available.")
+        return
 
-    track_files = os.listdir(tracks_output_dir)[:2]
-    for f in track_files:
-        with open(os.path.join(tracks_output_dir, f), "rb") as file:
-            print("Track:", pickle.load(file))
+    sample_df = df.sample(n=ROWS_PER_TEST, random_state=42)
 
-    part_files = os.listdir(participation_output_dir)[:1]
-    for f in part_files:
-        with open(os.path.join(participation_output_dir, f), "rb") as file:
-            parts = pickle.load(file)
-            for p in parts[:2]:
-                print("Participation:", p)
+    print(f"\nRunning test on {ROWS_PER_TEST} rows...\n")
 
+    start = time.perf_counter()
+    run_test(sample_df)
+    end = time.perf_counter()
+
+    total_time = end - start
+
+    print("\n==============================")
+    print(f"Total time for {ROWS_PER_TEST} rows: {total_time:.3f} seconds")
+    print("==============================\n")
+
+    print("Cleaning up test files...")
+    clean_test_data()
+    print("Cleanup completed.")
 
 if __name__ == "__main__":
     test_parser()
