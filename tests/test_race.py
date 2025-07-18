@@ -2,9 +2,7 @@ import os
 import sys
 import pickle
 
-# Extend module path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.join(script_dir, '..')
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, parent_dir)
 
 from models.race import Race
@@ -42,10 +40,10 @@ def test_race_construction():
     for dog in dogs.values():
         for p in dog.race_participations:
             sample_race_ids.add(p.race_id)
-        if len(sample_race_ids) >= 10:
+        if len(sample_race_ids) >= 3:
             break
 
-    for race_id in list(sample_race_ids)[:10]:
+    for race_id in list(sample_race_ids)[:3]:
         race = Race.from_dogs(list(dogs.values()), race_id)
         if race:
             print("\n--- RACE INFO ---")

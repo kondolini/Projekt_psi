@@ -2,11 +2,11 @@ import os
 import pickle
 from datetime import date, time
 from typing import List, Optional, Dict
+import re
 
 from models.track import Track
 from models.race_participation import RaceParticipation
 from models.dog import Dog
-import re
 
 def convert_sp_to_decimal(sp: Optional[str]) -> Optional[float]:
     """
@@ -38,6 +38,8 @@ def convert_sp_to_decimal(sp: Optional[str]) -> Optional[float]:
         return float(re.match(r"^\d+(\.\d+)?", sp).group(0))
     except Exception:
         return None
+
+
 
 class Race:
     def __init__(
