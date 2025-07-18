@@ -7,11 +7,6 @@ import time
 from tqdm import tqdm
 from collections import defaultdict
 
-# Extend module path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.join(script_dir, '..')
-sys.path.insert(0, parent_dir)
-
 from models.dog import Dog
 from models.track import Track
 from models.race_participation import parse_race_participation
