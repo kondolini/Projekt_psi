@@ -18,8 +18,8 @@ API_TIMEOUT = 5
 SAVE_PROGRESS_EVERY = 50
 
 # Paths
-dogs_dir = "data/dogs_enhanced"  # This is where build_and_save_dogs.py saves to
-enhanced_dogs_dir = "data/dogs_enhanced"  # Same directory for now
+dogs_dir = "../data/dogs_enhanced"  # This is where build_and_save_dogs.py saves to
+enhanced_dogs_dir = "../data/dogs_enhanced"  # Same directory for now
 
 # Ensure output directory exists
 os.makedirs(enhanced_dogs_dir, exist_ok=True)
@@ -93,11 +93,11 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
     """Load a bucket of dogs from pickle file"""
     # Try multiple possible locations based on where build_and_save_dogs.py saves
     possible_paths = [
-        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Current working directory
+        #os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Current working directory
         os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from scraping
-        os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
-        os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative relative path
-        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Try with data_construction as base
+        #os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
+        #os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative relative path
+        #os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Try with data_construction as base
     ]
     
     for bucket_path in possible_paths:
@@ -131,12 +131,21 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
 
 def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool = False):
     """Save a bucket of dogs to pickle file"""
-    output_dir = enhanced_dogs_dir if enhanced else dogs_dir
+    # Fix: Save to the correct directory that matches where test_race.py looks
+    if enhanced:
+        output_dir = "../data/dogs_enhanced"  # Main project directory
+    else:
+        output_dir = "../data/dogs"  # Main project directory
+    
+    # Ensure the directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
     bucket_path = os.path.join(output_dir, f"dogs_bucket_{bucket_idx}.pkl")
     
     try:
         with open(bucket_path, "wb") as f:
             pickle.dump(dogs_dict, f)
+        print(f"💾 Saved to: {os.path.abspath(bucket_path)}")  # Debug: show where it's saved
         return True
     except Exception as e:
         print(f"❌ Error saving bucket {bucket_idx}: {e}")
@@ -528,13 +537,32 @@ def load_enhanced_dog_by_id(dog_id: str) -> Optional[Dog]:
             try:
                 with open(bucket_path, "rb") as f:
                     dogs_dict = pickle.load(f)
-                return dogs_dict.get(dog_id)
+                
+                # Try different key formats to find the dog
+                dog_id_str = str(dog_id)
+                
+                # Direct lookup
+                if dog_id_str in dogs_dict:
+                    return dogs_dict[dog_id_str]
+                
+                # Try as integer key
+                try:
+                    dog_id_int = int(dog_id)
+                    if dog_id_int in dogs_dict:
+                        return dogs_dict[dog_id_int]
+                except ValueError:
+                    pass
+                
+                # Try searching through all keys with string conversion
+                for key in dogs_dict.keys():
+                    if str(key) == dog_id_str:
+                        return dogs_dict[key]
+                
             except Exception as e:
                 print(f"❌ Error loading enhanced dog {dog_id} from {bucket_path}: {e}")
                 continue
     
     return None
-
 def check_data_structure():
     """Check the actual structure of the dog data to understand the issue"""
     print("🔍 ANALYZING DOG DATA STRUCTURE")
@@ -711,33 +739,100 @@ def view_enhanced_dog(dog_id: str):
         print(f"  - Birth Date: {enhanced_dog.birth_date if enhanced_dog.birth_date else 'Unknown'}")
         print(f"  - Color: '{enhanced_dog.color if enhanced_dog.color else 'Unknown'}'")
         print(f"  - Weight: {enhanced_dog.weight if enhanced_dog.weight else 'Unknown'}")
+        
+        # Show pedigree information if available
+        if enhanced_dog.sire or enhanced_dog.dam:
+            print(f"  - Sire: {enhanced_dog.sire.name if enhanced_dog.sire and enhanced_dog.sire.name else (enhanced_dog.sire.id if enhanced_dog.sire else 'Unknown')}")
+            print(f"  - Dam: {enhanced_dog.dam.name if enhanced_dog.dam and enhanced_dog.dam.name else (enhanced_dog.dam.id if enhanced_dog.dam else 'Unknown')}")
+        
         print(f"  - Race Participations: {len(enhanced_dog.race_participations)}")
         
         if enhanced_dog.race_participations:
-            print(f"\n📋 Sample Race Participations:")
-            for i, race in enumerate(enhanced_dog.race_participations[:3]):
+            print(f"\n📋 Detailed Race Participations (showing first 5):")
+            print("-" * 80)
+            
+            # Sort by date descending to show most recent first
+            sorted_participations = sorted(enhanced_dog.race_participations, 
+                                         key=lambda x: x.race_datetime if x.race_datetime else datetime.min, 
+                                         reverse=True)
+            
+            for i, race in enumerate(sorted_participations[:5]):
                 print(f"  {i+1}. Race ID: {race.race_id}")
                 print(f"     - Date: {race.race_datetime}")
                 print(f"     - Track: {race.track_name}")
                 print(f"     - Meeting ID: {getattr(race, 'meeting_id', 'None')}")
+                print(f"     - Distance: {race.distance}m" if race.distance else "     - Distance: Unknown")
+                print(f"     - Trap: {race.trap_number}" if race.trap_number else "     - Trap: Unknown")
                 print(f"     - Position: {race.position}")
+                print(f"     - Run Time: {race.run_time}s" if race.run_time else "     - Run Time: N/A")
+                print(f"     - Split Time: {race.split_time}s" if race.split_time else "     - Split Time: N/A")
+                print(f"     - Starting Price (SP): {race.sp}" if race.sp else "     - Starting Price: N/A")
+                print(f"     - Weight: {race.weight}kg" if race.weight else "     - Weight: N/A")
+                print(f"     - Race Class: {race.race_class}" if race.race_class else "     - Race Class: Unknown")
+                print(f"     - Going: {race.going}" if race.going else "     - Going: Unknown")
+                print(f"     - Btn Distance: {race.btn_distance}" if race.btn_distance else "     - Btn Distance: N/A")
+                print(f"     - Adjusted Time: {race.adjusted_time}s" if race.adjusted_time else "     - Adjusted Time: N/A")
+                print(f"     - Winner ID: {race.winner_id}" if race.winner_id else "     - Winner ID: N/A")
+                print(f"     - Comments: {race.comment}" if race.comment else "     - Comments: None")
+                
+                # Show additional attributes if they exist
+                if hasattr(race, 'color') and race.color:
+                    print(f"     - Dog Color: {race.color}")
+                if hasattr(race, 'birth_date') and race.birth_date:
+                    print(f"     - Dog Birth Date: {race.birth_date}")
+                if hasattr(race, 'sire') and race.sire:
+                    print(f"     - Sire: {race.sire}")
+                if hasattr(race, 'dam') and race.dam:
+                    print(f"     - Dam: {race.dam}")
+                
+                print()  # Empty line between races
+            
+            # Show race statistics
+            print(f"\n📊 Race Statistics:")
+            all_times = [r.run_time for r in enhanced_dog.race_participations if r.run_time]
+            if all_times:
+                print(f"  - Best Time: {min(all_times):.2f}s")
+                print(f"  - Average Time: {sum(all_times)/len(all_times):.2f}s")
+                print(f"  - Worst Time: {max(all_times):.2f}s")
+            
+            # Position statistics
+            positions = [r.position for r in enhanced_dog.race_participations if r.position and str(r.position).replace('.','').isdigit()]
+            if positions:
+                numeric_positions = [float(p) for p in positions]
+                wins = sum(1 for p in numeric_positions if p == 1.0)
+                places = sum(1 for p in numeric_positions if p <= 3.0)
+                print(f"  - Wins: {wins}/{len(enhanced_dog.race_participations)} ({wins/len(enhanced_dog.race_participations)*100:.1f}%)")
+                print(f"  - Places (1st-3rd): {places}/{len(enhanced_dog.race_participations)} ({places/len(enhanced_dog.race_participations)*100:.1f}%)")
+                print(f"  - Average Position: {sum(numeric_positions)/len(numeric_positions):.1f}")
+            
+            # Track statistics
+            tracks = {}
+            for race in enhanced_dog.race_participations:
+                if race.track_name:
+                    tracks[race.track_name] = tracks.get(race.track_name, 0) + 1
+            if tracks:
+                print(f"  - Most raced track: {max(tracks, key=tracks.get)} ({tracks[max(tracks, key=tracks.get)]} races)")
         
         # Compare with original if available
-        original_dog = load_dogs_bucket(get_bucket_index(dog_id))
-        if original_dog and dog_id in original_dog:
-            orig = original_dog[dog_id]
+        original_dogs = load_dogs_bucket(bucket_idx)
+        if original_dogs and str(dog_id) in original_dogs:
+            orig = original_dogs[str(dog_id)]
             print(f"\n📈 Enhancement Comparison:")
             print(f"  - Name: '{orig.name}' → '{enhanced_dog.name}'")
             print(f"  - Trainer: '{orig.trainer}' → '{enhanced_dog.trainer}'")
+            print(f"  - Color: '{orig.color}' → '{enhanced_dog.color}'")
             
             name_improved = bool(enhanced_dog.name) and not bool(orig.name)
             trainer_improved = bool(enhanced_dog.trainer) and not bool(orig.trainer)
+            color_improved = bool(enhanced_dog.color) and not bool(orig.color)
             
             if name_improved:
                 print(f"  ✅ Name was enhanced!")
             if trainer_improved:
                 print(f"  ✅ Trainer was enhanced!")
-            if not name_improved and not trainer_improved:
+            if color_improved:
+                print(f"  ✅ Color was enhanced!")
+            if not any([name_improved, trainer_improved, color_improved]):
                 print(f"  ℹ️ No enhancement needed (already had data)")
         
         return enhanced_dog
@@ -773,6 +868,7 @@ def view_enhanced_dog(dog_id: str):
             print(f"❌ Could not load bucket {bucket_idx}")
             
         return None
+
 
 def compare_enhancement_results():
     """Compare results between original and enhanced dogs"""
@@ -1076,6 +1172,244 @@ def quick_bucket_stats(bucket_idx: int):
         status = "✅" if not dog_needs_enhancement(dog) else "❌"
         print(f"  {status} Dog {dog_id}: {dog.name or 'No name'} (Trainer: {dog.trainer or 'No trainer'})")
 
+def convert_sp_to_decimal(sp_str):
+    """Convert British fractional odds to decimal format using D = (a+b)/b"""
+    if not sp_str or sp_str == '' or sp_str == 'N/A':
+        return None
+    
+    try:
+        # Convert to string and strip whitespace
+        sp_clean = str(sp_str).strip()
+        
+        # Handle special cases
+        if sp_clean.lower() in ['evens', 'evs', '1/1', 'evensf', 'evsf']:
+            return 2.0
+        if sp_clean.lower() in ['no price', 'np', 'withdrawn', 'wd', 'void']:
+            return None
+        
+        # Remove betting suffixes (F = favourite, JF = joint favourite, C = co-favourite, etc.)
+        betting_suffixes = ['F', 'JF', 'CF', 'C', 'FAV', 'JFAV', 'CFAV']
+        original_sp = sp_clean
+        
+        for suffix in betting_suffixes:
+            if sp_clean.upper().endswith(suffix):
+                sp_clean = sp_clean[:-len(suffix)].strip()
+                break
+        
+        # Handle fractional odds like "9/2", "5/1", "11/4", "5/3F", etc.
+        if '/' in sp_clean:
+            parts = sp_clean.split('/')
+            if len(parts) == 2:
+                try:
+                    a = float(parts[0].strip())
+                    b = float(parts[1].strip())
+                    if b != 0:
+                        decimal_odds = (a + b) / b
+                        return round(decimal_odds, 2)
+                except ValueError:
+                    pass
+        
+        # Handle already decimal format
+        try:
+            return float(sp_clean)
+        except ValueError:
+            pass
+            
+    except Exception as e:
+        # Debug: print problematic SP values
+        if total_conversions < 20:  # Only show first 20 for debugging
+            print(f"    ⚠️ Could not convert SP: '{sp_str}' - {e}")
+    
+    return None
+
+def convert_all_sp_to_decimal():
+    """Convert all SP values in all dog buckets from fractional to decimal format"""
+    print("💰 CONVERTING ALL SP VALUES TO DECIMAL FORMAT")
+    print("=" * 60)
+    print("Formula: D = (a+b)/b where a/b is the fractional odds")
+    print()
+    
+    total_conversions = 0
+    total_participations = 0
+    buckets_processed = 0
+    
+    for bucket_idx in range(NUM_BUCKETS):
+        # Load bucket
+        dogs_dict = load_dogs_bucket(bucket_idx)
+        if not dogs_dict:
+            continue
+        
+        bucket_conversions = 0
+        bucket_participations = 0
+        
+        print(f"🔧 Processing bucket {bucket_idx}...")
+        
+        # Process each dog in the bucket
+        for dog_id, dog in dogs_dict.items():
+            # Process each race participation
+            for participation in dog.race_participations:
+                bucket_participations += 1
+                
+                # Check if SP exists and needs conversion
+                if hasattr(participation, 'sp') and participation.sp:
+                    original_sp = participation.sp
+                    
+                    # Only convert if it's not already a decimal number
+                    if isinstance(original_sp, str) and ('/' in original_sp or original_sp.lower() in ['evens', 'evs']):
+                        decimal_sp = convert_sp_to_decimal(original_sp)
+                        if decimal_sp is not None:
+                            participation.sp = decimal_sp
+                            bucket_conversions += 1
+                            
+                            # Show first few conversions for verification
+                            if total_conversions < 10:
+                                print(f"    Dog {dog_id}: '{original_sp}' → {decimal_sp}")
+        
+        # Save the updated bucket if any conversions were made
+        if bucket_conversions > 0:
+            if save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True):
+                print(f"  ✅ Bucket {bucket_idx}: {bucket_conversions} conversions, saved successfully")
+            else:
+                print(f"  ❌ Bucket {bucket_idx}: Failed to save after {bucket_conversions} conversions")
+        else:
+            print(f"  ⏭️ Bucket {bucket_idx}: No SP conversions needed")
+        
+        total_conversions += bucket_conversions
+        total_participations += bucket_participations
+        buckets_processed += 1
+        
+        # Progress update every 10 buckets
+        if buckets_processed % 10 == 0:
+            print(f"📊 Progress: {buckets_processed}/{NUM_BUCKETS} buckets processed")
+    
+    print(f"\n🎉 SP CONVERSION COMPLETED!")
+    print("=" * 40)
+    print(f"📊 Statistics:")
+    print(f"  - Buckets processed: {buckets_processed}")
+    print(f"  - Total race participations: {total_participations:,}")
+    print(f"  - SP values converted: {total_conversions:,}")
+    print(f"  - Conversion rate: {(total_conversions/max(total_participations,1)*100):.1f}%")
+    print(f"💾 All changes saved to enhanced dog buckets")
+
+def analyze_unconverted_sp_formats():
+    """Analyze SP formats that couldn't be converted to understand the patterns"""
+    print("🔍 ANALYZING UNCONVERTED SP FORMATS")
+    print("=" * 50)
+    
+    unconverted_samples = set()
+    total_checked = 0
+    
+    for bucket_idx in range(min(5, NUM_BUCKETS)):  # Check first 5 buckets
+        dogs_dict = load_dogs_bucket(bucket_idx)
+        if not dogs_dict:
+            continue
+        
+        for dog_id, dog in dogs_dict.items():
+            for participation in dog.race_participations:
+                if hasattr(participation, 'sp') and participation.sp:
+                    total_checked += 1
+                    original_sp = participation.sp
+                    
+                    # Try conversion
+                    if isinstance(original_sp, str):
+                        decimal_sp = convert_sp_to_decimal(original_sp)
+                        if decimal_sp is None and original_sp.strip() != '':
+                            unconverted_samples.add(original_sp)
+                            
+                            if len(unconverted_samples) >= 50:  # Collect 50 samples
+                                break
+                if len(unconverted_samples) >= 50:
+                    break
+            if len(unconverted_samples) >= 50:
+                break
+        if len(unconverted_samples) >= 50:
+            break
+    
+    print(f"📊 Analysis Results:")
+    print(f"  - Total SP values checked: {total_checked:,}")
+    print(f"  - Unconverted samples found: {len(unconverted_samples)}")
+    print()
+    
+    if unconverted_samples:
+        print("📋 Sample unconverted SP formats:")
+        for i, sp in enumerate(sorted(unconverted_samples)[:20]):
+            print(f"  {i+1:2d}. '{sp}'")
+        
+        # Analyze patterns
+        print(f"\n🔍 Pattern Analysis:")
+        patterns = {
+            'with_F': sum(1 for sp in unconverted_samples if 'F' in sp.upper()),
+            'with_JF': sum(1 for sp in unconverted_samples if 'JF' in sp.upper()),
+            'with_C': sum(1 for sp in unconverted_samples if 'C' in sp.upper()),
+            'with_slash': sum(1 for sp in unconverted_samples if '/' in sp),
+            'numeric_only': sum(1 for sp in unconverted_samples if sp.replace('.', '').replace('-', '').isdigit()),
+            'contains_letters': sum(1 for sp in unconverted_samples if any(c.isalpha() for c in sp)),
+        }
+        
+        for pattern, count in patterns.items():
+            if count > 0:
+                print(f"  - {pattern}: {count} samples")
+    
+    return unconverted_samples
+
+
+
+def verify_sp_conversions(sample_bucket: int = 0):
+    """Verify that SP conversions were applied correctly"""
+    print(f"🔍 VERIFYING SP CONVERSIONS IN BUCKET {sample_bucket}")
+    print("=" * 50)
+    
+    dogs_dict = load_dogs_bucket(sample_bucket)
+    if not dogs_dict:
+        print(f"❌ Bucket {sample_bucket} not found")
+        return
+    
+    fractional_count = 0
+    decimal_count = 0
+    none_count = 0
+    sample_conversions = []
+    
+    # Check first few dogs
+    for dog_id, dog in list(dogs_dict.items())[:5]:
+        print(f"\n🐕 Dog {dog_id} ({dog.name or 'No name'}):")
+        
+        # Check first few participations
+        for i, participation in enumerate(dog.race_participations[:3]):
+            if hasattr(participation, 'sp') and participation.sp is not None:
+                sp_value = participation.sp
+                
+                if isinstance(sp_value, (int, float)):
+                    decimal_count += 1
+                    status = "✅ Decimal"
+                    sample_conversions.append(f"Race {participation.race_id}: {sp_value}")
+                elif isinstance(sp_value, str) and '/' in sp_value:
+                    fractional_count += 1
+                    status = "⚠️ Still fractional"
+                else:
+                    status = f"❓ Other format: {type(sp_value)}"
+                
+                print(f"  Race {i+1}: SP = {sp_value} ({status})")
+            else:
+                none_count += 1
+                print(f"  Race {i+1}: SP = None")
+    
+    print(f"\n📊 Sample Verification Results:")
+    print(f"  - Decimal SP values: {decimal_count}")
+    print(f"  - Fractional SP values: {fractional_count}")
+    print(f"  - None/missing SP values: {none_count}")
+    
+    if fractional_count > 0:
+        print(f"⚠️ Warning: {fractional_count} fractional values still found!")
+        print("💡 Run convert_all_sp_to_decimal() again if needed")
+    else:
+        print(f"✅ All SP values are in decimal format!")
+    
+    if sample_conversions:
+        print(f"\n📋 Sample decimal SP values:")
+        for conversion in sample_conversions[:5]:
+            print(f"  - {conversion}")
+
+# Update the main menu to include the new options
 if __name__ == "__main__":
     print("🐕 Dog Enhancement Tool")
     print("Enhances dogs with names, trainers, and other missing data using GBGB API")
@@ -1112,21 +1446,25 @@ if __name__ == "__main__":
             sys.exit(1)
     
     # Show available options
-    print("Available options:")
+        print("Available options:")
     print("1. Get enhancement statistics")
     print("2. Test enhancement (1 bucket)")
     print("3. Test single dog")
     print("4. Check data structure")
-    print("5. Check enhancement progress")  # New option
+    print("5. Check enhancement progress")
     print("6. Enhance all dogs")
     print("7. View enhanced dog")
     print("8. Compare enhancement results")
     print("9. List sample enhanced dogs")
-    print("10. Search dogs by name")  # New option
-    print("11. Quick bucket stats")  # New option
+    print("10. Search dogs by name")
+    print("11. Quick bucket stats")
+    print("12. Convert all SP values to decimal")
+    print("13. Verify SP conversions")
+    print("14. Analyze unconverted SP formats")  # New option
     print()
     
-    choice = input("Enter choice (1-11): ").strip()
+    choice = input("Enter choice (1-14): ").strip()
+    
     
     if choice == '1':
         get_enhancement_stats()
@@ -1159,5 +1497,13 @@ if __name__ == "__main__":
             quick_bucket_stats(int(bucket_num))
         else:
             print("Invalid bucket number")
+    elif choice == '12':
+        convert_all_sp_to_decimal()
+    elif choice == '13':
+        bucket_num = input("Enter bucket number to verify (default 0): ").strip()
+        bucket_num = int(bucket_num) if bucket_num.isdigit() else 0
+        verify_sp_conversions(bucket_num)
+    elif choice == '14':
+        analyze_unconverted_sp_formats()
     else:
         print("Invalid choice")

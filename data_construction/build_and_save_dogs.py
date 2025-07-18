@@ -18,11 +18,11 @@ from models.race_participation import parse_race_participation
 NUM_BUCKETS = 100
 
 # Paths
-data_dir = "data/scraped"
-dogs_output_dir = "data/dogs"
-tracks_output_dir = "data/tracks"
-participation_output_dir = "data/race_participations"
-unified_dir = "data/unified"
+data_dir = "../data/scraped"
+dogs_output_dir = "../data/dogs"
+tracks_output_dir = "../data/tracks"
+participation_output_dir = "../data/race_participations"
+unified_dir = "../data/unified"
 unified_race_index_path = os.path.join(unified_dir, "race_to_dog_index.pkl")
 unified_participation_index_path = os.path.join(unified_dir, "race_index.pkl")
 
