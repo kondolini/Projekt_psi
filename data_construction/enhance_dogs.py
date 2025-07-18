@@ -8,6 +8,11 @@ import threading
 from functools import lru_cache
 from typing import Optional, Dict, List
 
+# Add project root to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.join(script_dir, '..')
+sys.path.insert(0, parent_dir)
+
 from models.dog import Dog
 
 # Configuration
@@ -152,13 +157,8 @@ def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool 
         return False
 
 def dog_needs_enhancement(dog: Dog) -> bool:
-    """Check if a dog needs enhancement (missing key data)"""
-    return (
-        not dog.name or 
-        dog.name == '' or
-        not dog.trainer or 
-        dog.trainer == ''
-    )
+    """A dog needs enhancement if it has no name."""
+    return not dog.name or dog.name == ''
 
 def get_meeting_ids_for_dog(dog: Dog) -> List[str]:
     """Get meeting IDs from dog's race participations with improved extraction"""
@@ -248,14 +248,18 @@ def enhance_single_dog(dog_data):
     """Enhanced version with multiple API strategies and better fallback/debugging"""
     dog_id, dog = dog_data
 
-    # Try direct dog API
+    # Try direct dog API (basic info)
     dog_info = try_direct_dog_api_call(dog_id)
-    if dog_info and dog_info.get('name'):
-        if dog_info['name']:
+    time.sleep(0.05)
+    direct_success = False
+    if dog_info:
+        if dog_info.get('name') and (not dog.name or dog.name == ''):
             dog.set_name(dog_info['name'])
-        if dog_info['trainer']:
+            direct_success = True
+        if dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
             dog.set_trainer(dog_info['trainer'])
-        return dog_id, dog, True, "direct_api"
+        if direct_success:
+            return dog_id, dog, True, "direct_api"
 
     # Try all meeting_ids from all participations
     meeting_ids = get_meeting_ids_for_dog(dog)
@@ -266,22 +270,22 @@ def enhance_single_dog(dog_data):
             if meeting_data:
                 tried_meeting = True
                 dog_info = extract_dog_info_from_meeting(meeting_data, int(dog_id))
+                if dog_info and dog_info.get('name') and (not dog.name or dog.name == ''):
+                    dog.set_name(dog_info['name'])
+                if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
+                    dog.set_trainer(dog_info['trainer'])
                 if dog_info and dog_info.get('name'):
-                    if dog_info['name']:
-                        dog.set_name(dog_info['name'])
-                    if dog_info['trainer']:
-                        dog.set_trainer(dog_info['trainer'])
-                    if dog_info['born']:
+                    if dog_info.get('born'):
                         try:
                             from datetime import datetime
                             birth_date = datetime.strptime(dog_info['born'], '%Y-%m-%d')
                             dog.set_birth_date(birth_date)
                         except Exception:
                             pass
-                    if dog_info['colour']:
+                    if dog_info.get('colour'):
                         dog.set_color(dog_info['colour'])
                     return dog_id, dog, True, "meeting_api"
-            time.sleep(0.1)
+            time.sleep(0.05)
 
     # Try all race_ids from all participations
     race_ids = []
@@ -291,37 +295,55 @@ def enhance_single_dog(dog_data):
     tried_race = False
     for race_id in race_ids:
         dog_info = try_race_api_call(race_id, dog_id)
+        time.sleep(0.05)
+        if dog_info and dog_info.get('name') and (not dog.name or dog.name == ''):
+            dog.set_name(dog_info['name'])
+        if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
+            dog.set_trainer(dog_info['trainer'])
         if dog_info and dog_info.get('name'):
-            if dog_info['name']:
-                dog.set_name(dog_info['name'])
-            if dog_info['trainer']:
-                dog.set_trainer(dog_info['trainer'])
-            if dog_info['born']:
+            if dog_info.get('born'):
                 try:
                     from datetime import datetime
                     birth_date = datetime.strptime(dog_info['born'], '%Y-%m-%d')
                     dog.set_birth_date(birth_date)
                 except Exception:
                     pass
-            if dog_info['colour']:
+            if dog_info.get('colour'):
                 dog.set_color(dog_info['colour'])
             return dog_id, dog, True, "race_api"
         tried_race = True
 
+    # Fallback: Use direct_api.py logic to fill missing info
+    try:
+        from data_construction.direct_api import fetch_dog_races_from_api, build_dog_from_api
+        items = fetch_dog_races_from_api(dog_id)
+        if items:
+            new_dog = build_dog_from_api(dog_id, items)
+            # Only overwrite if missing
+            if (not dog.name or dog.name == '') and new_dog.name:
+                dog.set_name(new_dog.name)
+            if (not dog.trainer or dog.trainer == '') and new_dog.trainer:
+                dog.set_trainer(new_dog.trainer)
+            if not dog.race_participations and new_dog.race_participations:
+                dog.race_participations = new_dog.race_participations
+            # If we filled anything, count as enhanced
+            if (dog.name and dog.trainer) or dog.race_participations:
+                return dog_id, dog, True, "direct_api_rebuild"
+    except Exception as e:
+        print(f"    ⚠️ Fallback direct_api.py failed for {dog_id}: {e}")
+
     # If all methods fail, log the reason
-    if not dog_info:
-        print(f"⚠️ Could not enhance dog {dog_id}:")
-        print(f"   - Name: '{dog.name}' | Trainer: '{dog.trainer}'")
-        print(f"   - Participations: {len(dog.race_participations)}")
-        print(f"   - Meeting IDs tried: {meeting_ids if tried_meeting else 'None'}")
-        print(f"   - Race IDs tried: {race_ids if tried_race else 'None'}")
-        print(f"   - API returned no data for this dog in any endpoint.")
+    print(f"⚠️ Could not enhance dog {dog_id}:")
+    print(f"   - Name: '{dog.name}' | Trainer: '{dog.trainer}'")
+    print(f"   - Participations: {len(dog.race_participations)}")
+    print(f"   - Meeting IDs tried: {meeting_ids if tried_meeting else 'None'}")
+    print(f"   - Race IDs tried: {race_ids if tried_race else 'None'}")
+    print(f"   - API returned no data for this dog in any endpoint.")
 
     return dog_id, dog, False, "no_method_worked"
 
-
 def enhance_dogs_bucket(bucket_idx: int) -> Dict:
-    """Enhanced bucket processing with better debugging"""
+    """Enhanced bucket processing with better debugging and fallback"""
     print(f"\n🔧 Processing bucket {bucket_idx}")
     
     # Load bucket
@@ -360,7 +382,7 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
     # Process dogs in batches with concurrent execution
     enhanced_count = 0
     error_count = 0
-    method_stats = {'direct_api': 0, 'meeting_api': 0, 'race_api': 0, 'no_method_worked': 0}
+    method_stats = {'direct_api': 0, 'meeting_api': 0, 'race_api': 0, 'direct_api_rebuild': 0, 'no_method_worked': 0}
     
     # Use smaller batch size for testing
     batch_size = min(BATCH_SIZE, 10)
@@ -380,8 +402,26 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
                 dog_id = future_to_dog[future]
                 try:
                     dog_id, enhanced_dog, success, method = future.result(timeout=30)
-                    dogs_dict[dog_id] = enhanced_dog  # Update in bucket
-                    method_stats[method] += 1
+                    # Fallback: If all else failed, try direct_api.py logic as last resort
+                    if not success:
+                        try:
+                            from data_construction.direct_api import fetch_dog_races_from_api, build_dog_from_api
+                            items = fetch_dog_races_from_api(dog_id)
+                            if items:
+                                new_dog = build_dog_from_api(dog_id, items)
+                                if new_dog.name:
+                                    if (not dog.name or dog.name == ''):
+                                        dog.set_name(new_dog.name)
+                                    if (not dog.trainer or dog.trainer == '') and new_dog.trainer:
+                                        dog.set_trainer(new_dog.trainer)
+                                    if not dog.race_participations and new_dog.race_participations:
+                                        dog.race_participations = new_dog.race_participations
+                                    return dog_id, dog, True, "direct_api_rebuild"
+                        except Exception as e:
+                            print(f"      ⚠️ Final fallback direct_api.py failed for {dog_id}: {e}")
+
+                    dogs_dict[str(dog_id)] = enhanced_dog  # Always use str key
+                    method_stats[method] = method_stats.get(method, 0) + 1
                     
                     if success:
                         enhanced_count += 1
@@ -392,17 +432,12 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
                 except Exception as e:
                     error_count += 1
                     print(f"      💥 {dog_id}: Error - {str(e)[:50]}")
-    
-    # Show method statistics
-    print(f"  📊 Enhancement methods used:")
-    for method, count in method_stats.items():
-        print(f"    - {method}: {count} dogs")
-    
-    # Save enhanced bucket
-    if save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True):
-        print(f"  💾 Saved enhanced bucket {bucket_idx}")
-    else:
-        print(f"  ❌ Failed to save bucket {bucket_idx}")
+        
+        # Save after each batch
+        if save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True):
+            print(f"    💾 Progress saved after batch {i//batch_size + 1}")
+        else:
+            print(f"    ❌ Failed to save after batch {i//batch_size + 1}")
     
     return {
         'processed': len(dogs_to_enhance), 
@@ -443,17 +478,17 @@ def enhance_all_dogs(start_bucket: int = 0):
     print("=" * 60)
     
     # Get initial statistics
-    total_dogs, dogs_needing_enhancement = get_enhancement_stats()
+    ##total_dogs, dogs_needing_enhancement = get_enhancement_stats()
     
-    if dogs_needing_enhancement == 0:
-        print("✅ All dogs already enhanced!")
-        return
+    #if dogs_needing_enhancement == 0:
+       ##print("✅ All dogs already enhanced!")
+       # return
     
     # Estimate runtime
-    estimated_time_hours = (dogs_needing_enhancement * 3) / 3600  # 3 seconds per dog average
-    print(f"\n⏱️ Estimated runtime: {estimated_time_hours:.1f} hours")
+    #estimated_time_hours = (dogs_needing_enhancement * 3) / 3600  # 3 seconds per dog average
+    #print(f"\n⏱️ Estimated runtime: {estimated_time_hours:.1f} hours")
     
-    response = input(f"\n⚠️ This will enhance {dogs_needing_enhancement:,} dogs. Continue? (y/N): ")
+    response = input(f"\n⚠️ This will enhance 5 dogs. Continue? (y/N): ")
     if response.lower() != 'y':
         print("❌ Operation cancelled")
         return
