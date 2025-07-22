@@ -73,3 +73,28 @@ class Dog:
             "dam": self.dam.id if self.dam else None,
             "participations_count": len(self.race_participations)
             })
+
+    def get_participations_up_to(self, target_datetime: datetime) -> List[RaceParticipation]:
+        """Get all participations up to (but not including) a specific datetime
+        Critical for ensuring no data leakage in AI training"""
+        return [rp for rp in self.race_participations if rp.race_datetime < target_datetime]
+
+    def get_last_n_races_before(self, target_datetime: datetime, n: int = 5) -> List[RaceParticipation]:
+        """Get the last N races before a target datetime for recent form analysis"""
+        eligible_races = self.get_participations_up_to(target_datetime)
+        return eligible_races[-n:] if len(eligible_races) >= n else eligible_races
+
+    def get_form_vector_at_time(self, target_datetime: datetime) -> Optional[dict]:
+        """Get dog's form metrics at a specific point in time
+        For building feature vectors without data leakage"""
+        past_races = self.get_participations_up_to(target_datetime)
+        if not past_races:
+            return None
+        
+        return {
+            'total_races': len(past_races),
+            'recent_races': len(past_races[-10:]),  # Last 10 races
+            'avg_position': sum(float(r.position) for r in past_races if r.position and r.position.replace('.','').isdigit()) / len([r for r in past_races if r.position and r.position.replace('.','').isdigit()]),
+            'best_time': min((r.run_time for r in past_races if r.run_time), default=None),
+            'last_race_date': past_races[-1].race_datetime if past_races else None
+        }

@@ -54,10 +54,14 @@ def build_and_save_races(
         with open(path, 'rb') as f:
             dog_lookup.update(pickle.load(f))
 
+    print(f"Loaded {len(dog_lookup)} dogs from enhanced directory")
+
     # Build comprehensive parent-offspring mapping with artificial parent creation
     missing = defaultdict(list)
     parent_offspring = defaultdict(list)
     artificial_id_counter = 100000
+    
+    print("Fixing pedigree relationships...")
     
     # First pass: identify existing relationships and collect missing parents
     for dog in dog_lookup.values():
@@ -74,10 +78,12 @@ def build_and_save_races(
             elif isinstance(val, Dog):
                 parent_offspring[val.id].append(dog.id)
 
+    print(f"Found {len(missing)} missing parents to create artificially")
+
     # Create artificial parents with proper IDs and update dog_name_map
     artificial_parents_created = 0
     for pname, child_relationships in missing.items():
-        if artificial_id_counter >= 300000:
+        if artificial_id_counter >= 400000:  # Proper upper limit for artificial parents
             print("Warning: Reached maximum artificial parent ID limit")
             break
             
@@ -85,6 +91,7 @@ def build_and_save_races(
         artificial_id_counter += 1
         artificial_parents_created += 1
         
+        # Create artificial parent
         art = Dog(dog_id=art_id)
         art.set_name(pname)
         
@@ -98,6 +105,13 @@ def build_and_save_races(
         if child_weights:
             art.set_weight(sum(child_weights) / len(child_weights))
         
+        # Set properties for artificial parent
+        art.sire = None
+        art.dam = None
+        art.trainer = None
+        art.birth_date = None
+        art.race_participations = []
+        
         # Add to lookup and name mapping
         dog_lookup[art_id] = art
         dog_name_map[pname] = art_id
@@ -108,7 +122,7 @@ def build_and_save_races(
             setattr(child, rel_name, art)
             parent_offspring[art_id].append(child_id)
 
-    print(f"Created {artificial_parents_created} artificial parents")
+    print(f"Created {artificial_parents_created} artificial parents with IDs {100000}-{artificial_id_counter-1}")
 
     # Save updated dog name mapping
     with open(dog_name_csv, 'w', newline='', encoding='utf-8') as f:
@@ -116,6 +130,8 @@ def build_and_save_races(
         writer.writeheader()
         for name, dog_id in dog_name_map.items():
             writer.writerow({'dogName': name, 'dogId': dog_id})
+    
+    print(f"Updated dog name dictionary with {len(dog_name_map)} entries")
 
     # Save enhanced dogs (including artificial parents) back to buckets
     dog_buckets = defaultdict(dict)
@@ -129,34 +145,75 @@ def build_and_save_races(
         bucket_path = os.path.join(dogs_enhanced_dir, f"dogs_bucket_{bucket_idx}.pkl")
         with open(bucket_path, 'wb') as f:
             pickle.dump(dogs_dict, f)
+    
+    print("Saved enhanced dogs with fixed pedigree relationships")
 
     # Save parent-offspring mapping to CSV
     save_parent_offspring_mapping_to_csv(parent_offspring, dog_lookup, unified_dir)
 
-    # Index participations per race
+    # Index participations per race (use both race_id and meeting_id for uniqueness)
     race_parts = defaultdict(list)
     for path in glob(os.path.join(participation_dir, 'participations_bucket_*.pkl')):
         with open(path, 'rb') as f:
             for p in pickle.load(f):
-                race_parts[p.race_id].append(p)
+                race_key = (p.race_id, p.meeting_id) if p.meeting_id else p.race_id
+                race_parts[race_key].append(p)
+
+    print(f"Indexed {len(race_parts)} unique races")
 
     # Build races, attach weather, save
     unified_index = {}
-    for rid, parts in race_parts.items():
+    races_built = 0
+    races_with_weather = 0
+    
+    for race_key, parts in race_parts.items():
         if not parts:
             continue
-        race = Race.from_participations(parts)
-        date_str = race.race_date.strftime('%Y-%m-%d')
-        time_str = race.race_time.strftime('%H:%M')
-        w = get_weather(date_str, time_str, race.track_name)
-        if w:
-            race.rainfall_7d = w['rainfall_7d']
-            race.humidity = w['humidity']
-            race.temperature = w['temperature']
-        out = os.path.join(race_output_dir, f'race_{rid}.pkl')
-        with open(out, 'wb') as f:
-            pickle.dump(race, f)
-        unified_index[rid] = out
+            
+        try:
+            race = Race.from_participations(parts)
+            
+            # Add weather data
+            try:
+                date_str = race.race_date.strftime('%Y-%m-%d')
+                time_str = race.race_time.strftime('%H:%M')
+                w = get_weather(date_str, time_str, race.track_name)
+                if w:
+                    race.rainfall_7d = w['rainfall_7d']
+                    race.humidity = w['humidity']
+                    race.temperature = w['temperature']
+                    races_with_weather += 1
+                else:
+                    # Set default weather values
+                    race.rainfall_7d = [0.0] * 7
+                    race.humidity = 50.0
+                    race.temperature = 15.0
+            except Exception as e:
+                print(f"Weather fetch failed for race {race.race_id}: {e}")
+                race.rainfall_7d = [0.0] * 7
+                race.humidity = 50.0
+                race.temperature = 15.0
+            
+            # Save race
+            if isinstance(race_key, tuple):
+                race_id, meeting_id = race_key
+                out = os.path.join(race_output_dir, f'race_{race_id}_{meeting_id}.pkl')
+            else:
+                out = os.path.join(race_output_dir, f'race_{race_key}.pkl')
+            
+            with open(out, 'wb') as f:
+                pickle.dump(race, f)
+            
+            unified_index[race_key] = out
+            races_built += 1
+            
+            # Progress update
+            if races_built % 1000 == 0:
+                print(f"Built {races_built} races, {races_with_weather} with weather data...")
+                
+        except Exception as e:
+            print(f"Error building race {race_key}: {e}")
+            continue
 
     # Save unified indexes including parent-offspring
     with open(os.path.join(unified_dir, 'race_index.pkl'), 'wb') as f:
@@ -164,7 +221,16 @@ def build_and_save_races(
     with open(os.path.join(unified_dir, 'parent_offspring.pkl'), 'wb') as f:
         pickle.dump(dict(parent_offspring), f)
 
-    print(f"Saved {len(unified_index)} races and parent_offspring mapping of {len(parent_offspring)} parents.")
+    print(f"\n🎉 BUILD COMPLETED!")
+    print("=" * 50)
+    print(f"📊 Statistics:")
+    print(f"  - Dogs processed: {len(dog_lookup):,}")
+    print(f"  - Artificial parents created: {artificial_parents_created:,}")
+    print(f"  - Parent-offspring relationships: {len(parent_offspring):,}")
+    print(f"  - Races built: {races_built:,}")
+    print(f"  - Races with weather: {races_with_weather:,}")
+    print(f"  - Weather success rate: {(races_with_weather/races_built*100):.1f}%")
+    
     return unified_index, parent_offspring
 
 def save_parent_offspring_mapping_to_csv(parent_offspring_dict, dog_lookup, unified_dir):
@@ -176,7 +242,7 @@ def save_parent_offspring_mapping_to_csv(parent_offspring_dict, dog_lookup, unif
     for parent_id, offspring_ids in parent_offspring_dict.items():
         parent_dog = dog_lookup.get(parent_id)
         parent_name = parent_dog.name if parent_dog and parent_dog.name else "Unknown"
-        is_artificial = int(parent_id) >= 100000 and int(parent_id) < 300000
+        is_artificial = int(parent_id) >= 100000
         
         for offspring_id in offspring_ids:
             offspring_dog = dog_lookup.get(offspring_id)
@@ -200,14 +266,13 @@ def save_parent_offspring_mapping_to_csv(parent_offspring_dict, dog_lookup, unif
             writer.writerows(csv_data)
         
         print(f"Saved parent-offspring mapping to {csv_path}")
-        print(f"Total parent-offspring relationships: {len(csv_data)}")
         
         # Statistics
         artificial_count = sum(1 for row in csv_data if row['is_artificial_parent'])
         real_count = len(csv_data) - artificial_count
         
-        print(f"  - Real parent relationships: {real_count}")
-        print(f"  - Artificial parent relationships: {artificial_count}")
+        print(f"  - Real parent relationships: {real_count:,}")
+        print(f"  - Artificial parent relationships: {artificial_count:,}")
 
 def main():
     build_and_save_races()

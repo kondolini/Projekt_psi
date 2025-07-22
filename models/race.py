@@ -1,8 +1,8 @@
 import os
 import pickle
 import re
-from datetime import date, time
-from typing import Dict, Optional
+from datetime import date, time, datetime
+from typing import Dict, Optional, List
 from models.track import Track
 from models.race_participation import RaceParticipation
 from models.dog import Dog
@@ -162,6 +162,21 @@ class Race:
             return dog_lookup[dog_id].get_participation_by_race(self.race_id, self.meeting_id)
         return None
     
+    @staticmethod
+    def get_races_chronologically(race_lookup: Dict[str, "Race"]) -> List["Race"]:
+        """Get all races sorted chronologically for training"""
+        return sorted(race_lookup.values(), key=lambda r: (r.race_date, r.race_time))
+
+    @staticmethod
+    def get_races_before_date(race_lookup: Dict[str, "Race"], cutoff_date: date) -> List["Race"]:
+        """Get all races before a specific date for training/validation split"""
+        return [race for race in race_lookup.values() 
+                if race.race_date < cutoff_date]
+
+    def get_race_datetime(self) -> datetime:
+        """Get combined datetime for easier sorting"""
+        return datetime.combine(self.race_date, self.race_time)
+
     def __lt__(self, other):
         return (self.race_date, self.race_time) < (other.race_date, other.race_time)
 
