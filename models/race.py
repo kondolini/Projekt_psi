@@ -172,6 +172,12 @@ class Race:
         """Get all races before a specific date for training/validation split"""
         return [race for race in race_lookup.values() 
                 if race.race_date < cutoff_date]
+    
+    @staticmethod
+    def get_races_after_date(race_lookup: Dict[str, "Race"], cutoff_date: date) -> List["Race"]:
+        """Get all races after a specific date for training/validation split"""
+        return [race for race in race_lookup.values()
+                if race.race_date >= cutoff_date]
 
     def get_race_datetime(self) -> datetime:
         """Get combined datetime for easier sorting"""
