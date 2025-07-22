@@ -73,25 +73,54 @@ Tracks are cached and saved during test parsing or batch preprocessing.
 
 ---
 
-### 🔜 🏁 `Race` class
+### ✅ 🏁 `Race` class
 
-Encapsulates a full race event, across **all dogs**.
+Encapsulates a **full race event**, combining structured data from each dog's participation, market odds, environmental context, and derived probabilistic features.
+
+**✅ Implemented Fields:**
+
+* **Static Info:**
+
+  * `race_id`, `meeting_id`, `race_date`, `race_time`
+  * `distance`, `race_class`, `category`, `track_name`
+* **Participants:**
+
+  * `dog_ids`: `Dict[int, str]` mapping trap number to dog ID
+* **Market Features:**
+
+  * `odds`: raw starting price odds (decimal) per trap
+  * `implied_probs`: 1/odds (uncorrected market probabilities)
+  * `devig_odds`: corrected odds via **Power Method** (to remove vig/overround)
+  * `fair_probs`: corrected probabilities (summing to 1)
+* **Performance Features:**
+
+  * `race_times`: actual finish time per trap
+  * `commentary_tags`: structured behavioral annotations per dog (list of tags)
+* **Environmental Features:**
+
+  * `rainfall_7d`: `[float; 7]` list of daily rain data
+  * `temperature`, `humidity`: scalar weather conditions
+
+**✅ Status:**
+
+* Constructed from `RaceParticipation` objects via `Race.from_participations()` or `Race.from_dogs()`.
+* All vector fields are structured as `Dict[int, value]`, keyed by trap number.
+* Includes built-in **vig correction** using the Power Method with numerical root-finding.
+* Supports `save()` and `load()` with pickle.
+* Connects to `Dog` and `Track` via lookup dictionaries.
+* Printable summary with `print_info()`.
 
 **🔜 To Implement:**
 
-* Fields:
+* `to_dataframe()` → converts a race to one row per dog, suitable for model input.
+* Race-level metadata: `prizes`, `winning_margin`, `track_condition`, etc.
+* Derived target distributions for win/place forecasting.
+* Integration of per-dog `memory_vector` and trainer-level statistics.
 
-  * `race_date`, `race_time`, `race_class`, `distance`, `category`, `prizes`
-  * `rainfall_7d`: `[float; 7]`
-  * `humidity`, `temperature`
-  * `odds_vec`, `race_time_vec`, `commentary_tags_vec`
+**📌 Notes:**
 
-**Planned References:**
-
-* List of participating `Dog` objects (including `trap_number`)
-* `Track` object
-
-This will be constructed later using `race_to_dog_index.pkl` and the `Dog` participations.
+* Implements **de-vigification** using the **Power Method**, a calibrated, bias-aware transformation of odds into fair probability distributions.
+* Outputs both raw market odds and calibrated fair odds, enabling uncertainty modeling and realistic pricing.
 
 ---
 

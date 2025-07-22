@@ -8,6 +8,11 @@ import threading
 from functools import lru_cache
 from typing import Optional, Dict, List
 
+# Add project root to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.join(script_dir, '..')
+sys.path.insert(0, parent_dir)
+
 from models.dog import Dog
 
 # Configuration
@@ -17,9 +22,9 @@ BATCH_SIZE = 25   # Process dogs in batches
 API_TIMEOUT = 5
 SAVE_PROGRESS_EVERY = 50
 
-# Paths
-dogs_dir = "../data/dogs_enhanced"  # This is where build_and_save_dogs.py saves to
-enhanced_dogs_dir = "../data/dogs_enhanced"  # Same directory for now
+# Paths - Fix these to match your actual directory structure
+dogs_dir = "../data/dogs_enhanced"  # Changed from "../data/dogs_enhanced"
+enhanced_dogs_dir = "../data/dogs_enhanced"  # Changed from "../data/dogs_enhanced"
 
 # Ensure output directory exists
 os.makedirs(enhanced_dogs_dir, exist_ok=True)
@@ -64,15 +69,16 @@ def fetch_meeting_data_cached(meeting_id):
 
 def extract_dog_info_from_meeting(meeting_data, target_dog_id):
     """Extract dog information from meeting data"""
-    if not meeting_data or len(meeting_data) == 0:
+    if isinstance(meeting_data, dict):
+        meeting = meeting_data
+    elif isinstance(meeting_data, list) and meeting_data:
+        meeting = meeting_data[0]
+    else:
         return None
-    
-    meeting = meeting_data[0]
     races = meeting.get('races', [])
-    
     for race in races:
         for trap in race.get('traps', []):
-            if trap.get('dogId') == target_dog_id:
+            if str(trap.get('dogId')) == str(target_dog_id):
                 return {
                     'name': trap.get('dogName', ''),
                     'sire': trap.get('dogSire', ''),
@@ -93,11 +99,10 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
     """Load a bucket of dogs from pickle file"""
     # Try multiple possible locations based on where build_and_save_dogs.py saves
     possible_paths = [
-        #os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Current working directory
-        os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from scraping
-        #os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
-        #os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative relative path
-        #os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Try with data_construction as base
+        os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Main project data directory
+        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from project root
+        os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
+        os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative from project root
     ]
     
     for bucket_path in possible_paths:
@@ -118,10 +123,10 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
     
     # Debug: Show what files actually exist in current directory
     print(f"💡 Current working directory: {os.getcwd()}")
-    if os.path.exists("data"):
-        print(f"💡 Contents of data/ directory:")
-        for item in os.listdir("data"):
-            item_path = os.path.join("data", item)
+    if os.path.exists("../data"):
+        print(f"💡 Contents of ../data/ directory:")
+        for item in os.listdir("../data"):
+            item_path = os.path.join("../data", item)
             if os.path.isdir(item_path):
                 files = os.listdir(item_path)
                 bucket_files = [f for f in files if f.startswith('dogs_bucket_')]
@@ -131,7 +136,7 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
 
 def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool = False):
     """Save a bucket of dogs to pickle file"""
-    # Fix: Save to the correct directory that matches where test_race.py looks
+    # Save to the correct directory that matches where the buckets actually are
     if enhanced:
         output_dir = "../data/dogs_enhanced"  # Main project directory
     else:
@@ -152,13 +157,8 @@ def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool 
         return False
 
 def dog_needs_enhancement(dog: Dog) -> bool:
-    """Check if a dog needs enhancement (missing key data)"""
-    return (
-        not dog.name or 
-        dog.name == '' or
-        not dog.trainer or 
-        dog.trainer == ''
-    )
+    """A dog needs enhancement if it has no name."""
+    return not dog.name or dog.name == ''
 
 def get_meeting_ids_for_dog(dog: Dog) -> List[str]:
     """Get meeting IDs from dog's race participations with improved extraction"""
@@ -245,79 +245,105 @@ def try_race_api_call(race_id: str, dog_id: str) -> Optional[Dict]:
     return None
 
 def enhance_single_dog(dog_data):
-    """Enhanced version with multiple API strategies"""
+    """Enhanced version with multiple API strategies and better fallback/debugging"""
     dog_id, dog = dog_data
-    
-    # Method 1: Try direct dog API call first (most reliable)
+
+    # Try direct dog API (basic info)
     dog_info = try_direct_dog_api_call(dog_id)
-    if dog_info and dog_info.get('name'):
-        # Update dog object with found information
-        if dog_info['name']:
+    time.sleep(0.05)
+    direct_success = False
+    if dog_info:
+        if dog_info.get('name') and (not dog.name or dog.name == ''):
             dog.set_name(dog_info['name'])
-        if dog_info['trainer']:
+            direct_success = True
+        if dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
             dog.set_trainer(dog_info['trainer'])
-        
-        return dog_id, dog, True, "direct_api"
-    
-    # Method 2: Try meeting-based approach (now should work!)
+        if direct_success:
+            return dog_id, dog, True, "direct_api"
+
+    # Try all meeting_ids from all participations
     meeting_ids = get_meeting_ids_for_dog(dog)
-    
+    tried_meeting = False
     if meeting_ids:
-        for meeting_id in meeting_ids[:3]:  # Try up to 3 meetings
+        for meeting_id in meeting_ids:
             meeting_data = fetch_meeting_data_cached(meeting_id)
             if meeting_data:
+                tried_meeting = True
                 dog_info = extract_dog_info_from_meeting(meeting_data, int(dog_id))
+                if dog_info and dog_info.get('name') and (not dog.name or dog.name == ''):
+                    dog.set_name(dog_info['name'])
+                if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
+                    dog.set_trainer(dog_info['trainer'])
                 if dog_info and dog_info.get('name'):
-                    # Update dog object
-                    if dog_info['name']:
-                        dog.set_name(dog_info['name'])
-                    if dog_info['trainer']:
-                        dog.set_trainer(dog_info['trainer'])
-                    if dog_info['born']:
+                    if dog_info.get('born'):
                         try:
                             from datetime import datetime
                             birth_date = datetime.strptime(dog_info['born'], '%Y-%m-%d')
                             dog.set_birth_date(birth_date)
-                        except:
+                        except Exception:
                             pass
-                    if dog_info['colour']:
+                    if dog_info.get('colour'):
                         dog.set_color(dog_info['colour'])
-                    
                     return dog_id, dog, True, "meeting_api"
-            
-            time.sleep(0.05)  # Small delay between API calls
-    
-    # Method 3: Try using race_id from participations as fallback
+            time.sleep(0.05)
+
+    # Try all race_ids from all participations
     race_ids = []
     for participation in dog.race_participations:
         if hasattr(participation, 'race_id') and participation.race_id:
             race_ids.append(str(participation.race_id))
-    
-    # Try first few race IDs
-    for race_id in race_ids[:2]:
+    tried_race = False
+    for race_id in race_ids:
         dog_info = try_race_api_call(race_id, dog_id)
+        time.sleep(0.05)
+        if dog_info and dog_info.get('name') and (not dog.name or dog.name == ''):
+            dog.set_name(dog_info['name'])
+        if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
+            dog.set_trainer(dog_info['trainer'])
         if dog_info and dog_info.get('name'):
-            # Update dog object
-            if dog_info['name']:
-                dog.set_name(dog_info['name'])
-            if dog_info['trainer']:
-                dog.set_trainer(dog_info['trainer'])
-            if dog_info['born']:
+            if dog_info.get('born'):
                 try:
                     from datetime import datetime
                     birth_date = datetime.strptime(dog_info['born'], '%Y-%m-%d')
                     dog.set_birth_date(birth_date)
-                except:
+                except Exception:
                     pass
-            if dog_info['colour']:
+            if dog_info.get('colour'):
                 dog.set_color(dog_info['colour'])
-            
             return dog_id, dog, True, "race_api"
-    
+        tried_race = True
+
+    # Fallback: Use direct_api.py logic to fill missing info
+    try:
+        from data_construction.direct_api import fetch_dog_races_from_api, build_dog_from_api
+        items = fetch_dog_races_from_api(dog_id)
+        if items:
+            new_dog = build_dog_from_api(dog_id, items)
+            # Only overwrite if missing
+            if (not dog.name or dog.name == '') and new_dog.name:
+                dog.set_name(new_dog.name)
+            if (not dog.trainer or dog.trainer == '') and new_dog.trainer:
+                dog.set_trainer(new_dog.trainer)
+            if not dog.race_participations and new_dog.race_participations:
+                dog.race_participations = new_dog.race_participations
+            # If we filled anything, count as enhanced
+            if (dog.name and dog.trainer) or dog.race_participations:
+                return dog_id, dog, True, "direct_api_rebuild"
+    except Exception as e:
+        print(f"    ⚠️ Fallback direct_api.py failed for {dog_id}: {e}")
+
+    # If all methods fail, log the reason
+    print(f"⚠️ Could not enhance dog {dog_id}:")
+    print(f"   - Name: '{dog.name}' | Trainer: '{dog.trainer}'")
+    print(f"   - Participations: {len(dog.race_participations)}")
+    print(f"   - Meeting IDs tried: {meeting_ids if tried_meeting else 'None'}")
+    print(f"   - Race IDs tried: {race_ids if tried_race else 'None'}")
+    print(f"   - API returned no data for this dog in any endpoint.")
+
     return dog_id, dog, False, "no_method_worked"
 
 def enhance_dogs_bucket(bucket_idx: int) -> Dict:
-    """Enhanced bucket processing with better debugging"""
+    """Enhanced bucket processing with better debugging and fallback"""
     print(f"\n🔧 Processing bucket {bucket_idx}")
     
     # Load bucket
@@ -356,7 +382,7 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
     # Process dogs in batches with concurrent execution
     enhanced_count = 0
     error_count = 0
-    method_stats = {'direct_api': 0, 'meeting_api': 0, 'race_api': 0, 'no_method_worked': 0}
+    method_stats = {'direct_api': 0, 'meeting_api': 0, 'race_api': 0, 'direct_api_rebuild': 0, 'no_method_worked': 0}
     
     # Use smaller batch size for testing
     batch_size = min(BATCH_SIZE, 10)
@@ -376,8 +402,26 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
                 dog_id = future_to_dog[future]
                 try:
                     dog_id, enhanced_dog, success, method = future.result(timeout=30)
-                    dogs_dict[dog_id] = enhanced_dog  # Update in bucket
-                    method_stats[method] += 1
+                    # Fallback: If all else failed, try direct_api.py logic as last resort
+                    if not success:
+                        try:
+                            from data_construction.direct_api import fetch_dog_races_from_api, build_dog_from_api
+                            items = fetch_dog_races_from_api(dog_id)
+                            if items:
+                                new_dog = build_dog_from_api(dog_id, items)
+                                if new_dog.name:
+                                    if (not dog.name or dog.name == ''):
+                                        dog.set_name(new_dog.name)
+                                    if (not dog.trainer or dog.trainer == '') and new_dog.trainer:
+                                        dog.set_trainer(new_dog.trainer)
+                                    if not dog.race_participations and new_dog.race_participations:
+                                        dog.race_participations = new_dog.race_participations
+                                    return dog_id, dog, True, "direct_api_rebuild"
+                        except Exception as e:
+                            print(f"      ⚠️ Final fallback direct_api.py failed for {dog_id}: {e}")
+
+                    dogs_dict[str(dog_id)] = enhanced_dog  # Always use str key
+                    method_stats[method] = method_stats.get(method, 0) + 1
                     
                     if success:
                         enhanced_count += 1
@@ -388,17 +432,12 @@ def enhance_dogs_bucket(bucket_idx: int) -> Dict:
                 except Exception as e:
                     error_count += 1
                     print(f"      💥 {dog_id}: Error - {str(e)[:50]}")
-    
-    # Show method statistics
-    print(f"  📊 Enhancement methods used:")
-    for method, count in method_stats.items():
-        print(f"    - {method}: {count} dogs")
-    
-    # Save enhanced bucket
-    if save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True):
-        print(f"  💾 Saved enhanced bucket {bucket_idx}")
-    else:
-        print(f"  ❌ Failed to save bucket {bucket_idx}")
+        
+        # Save after each batch
+        if save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True):
+            print(f"    💾 Progress saved after batch {i//batch_size + 1}")
+        else:
+            print(f"    ❌ Failed to save after batch {i//batch_size + 1}")
     
     return {
         'processed': len(dogs_to_enhance), 
@@ -433,34 +472,42 @@ def get_enhancement_stats():
     
     return total_dogs, dogs_needing_enhancement
 
-def enhance_all_dogs():
-    """Main function to enhance all dogs"""
+def enhance_all_dogs(start_bucket: int = 0):
+    """Main function to enhance all dogs, with optional starting bucket"""
     print("🚀 STARTING DOG ENHANCEMENT PROCESS")
     print("=" * 60)
     
     # Get initial statistics
-    total_dogs, dogs_needing_enhancement = get_enhancement_stats()
+    ##total_dogs, dogs_needing_enhancement = get_enhancement_stats()
     
-    if dogs_needing_enhancement == 0:
-        print("✅ All dogs already enhanced!")
-        return
+    #if dogs_needing_enhancement == 0:
+       ##print("✅ All dogs already enhanced!")
+       # return
     
     # Estimate runtime
-    estimated_time_hours = (dogs_needing_enhancement * 3) / 3600  # 3 seconds per dog average
-    print(f"\n⏱️ Estimated runtime: {estimated_time_hours:.1f} hours")
+    #estimated_time_hours = (dogs_needing_enhancement * 3) / 3600  # 3 seconds per dog average
+    #print(f"\n⏱️ Estimated runtime: {estimated_time_hours:.1f} hours")
     
-    response = input(f"\n⚠️ This will enhance {dogs_needing_enhancement:,} dogs. Continue? (y/N): ")
+    response = input(f"\n⚠️ This will enhance 5 dogs. Continue? (y/N): ")
     if response.lower() != 'y':
         print("❌ Operation cancelled")
         return
     
+    # Ask for starting bucket if not default
+    if start_bucket == 0:
+        start_bucket_input = input("Enter starting bucket (0-99, default 0): ").strip()
+        if start_bucket_input.isdigit():
+            start_bucket = int(start_bucket_input)
+        else:
+            start_bucket = 0
+
     # Process all buckets
     start_time = time.time()
     total_stats = {'processed': 0, 'enhanced': 0, 'errors': 0}
     
-    print(f"\n🔍 Processing {NUM_BUCKETS} buckets...")
+    print(f"\n🔍 Processing buckets {start_bucket} to {NUM_BUCKETS-1}...")
     
-    for bucket_idx in range(NUM_BUCKETS):
+    for bucket_idx in range(start_bucket, NUM_BUCKETS):
         bucket_stats = enhance_dogs_bucket(bucket_idx)
         
         # Update totals
@@ -470,7 +517,7 @@ def enhance_all_dogs():
         # Progress update
         if (bucket_idx + 1) % 10 == 0:
             elapsed = time.time() - start_time
-            avg_time_per_bucket = elapsed / (bucket_idx + 1)
+            avg_time_per_bucket = elapsed / (bucket_idx - start_bucket + 1)
             remaining_buckets = NUM_BUCKETS - (bucket_idx + 1)
             eta_minutes = (remaining_buckets * avg_time_per_bucket) / 60
             
@@ -480,7 +527,7 @@ def enhance_all_dogs():
     
     # Final summary
     total_time = time.time() - start_time
-    
+
     print("\n" + "=" * 60)
     print("🎉 DOG ENHANCEMENT COMPLETED!")
     print("=" * 60)
@@ -527,8 +574,8 @@ def load_enhanced_dog_by_id(dog_id: str) -> Optional[Dog]:
     
     # Try multiple possible locations for enhanced dogs
     possible_paths = [
-        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Current directory
-        os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from scraping
+        os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Main project directory
+        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from project root
         os.path.join(enhanced_dogs_dir, f"dogs_bucket_{bucket_idx}.pkl"),  # Config directory
     ]
     
@@ -1205,7 +1252,7 @@ def convert_sp_to_decimal(sp_str):
                     b = float(parts[1].strip())
                     if b != 0:
                         decimal_odds = (a + b) / b
-                        return round(decimal_odds, 2)
+                        return round(decimal_odds, )
                 except ValueError:
                     pass
         
@@ -1409,24 +1456,342 @@ def verify_sp_conversions(sample_bucket: int = 0):
         for conversion in sample_conversions[:5]:
             print(f"  - {conversion}")
 
+
+
+def debug_enhancement_failures():
+    """Debug multiple dogs that failed enhancement"""
+    print("🔍 DEBUGGING ENHANCEMENT FAILURES")
+    print("=" * 60)
+    
+    # Load bucket 0 and find dogs that need enhancement but might fail
+    dogs_dict = load_dogs_bucket(0)
+    if not dogs_dict:
+        print("❌ Cannot load bucket 0")
+        return
+    
+    # Find dogs that need enhancement
+    dogs_to_debug = []
+    for dog_id, dog in dogs_dict.items():
+        if dog_needs_enhancement(dog):
+            dogs_to_debug.append((dog_id, dog))
+            if len(dogs_to_debug) >= 5:  # Debug first 5 problematic dogs
+                break
+    
+    print(f"🔍 Found {len(dogs_to_debug)} dogs needing enhancement. Debugging first {min(5, len(dogs_to_debug))}...")
+    
+    for i, (dog_id, dog) in enumerate(dogs_to_debug):
+        print(f"\n{'='*20} DEBUG {i+1}/{len(dogs_to_debug)} {'='*20}")
+        debug_dog_enhancement_failure(dog_id, dog)
+
+def debug_dog_enhancement_failure(dog_id: str, dog: Dog):
+    """Detailed debugging for dogs that fail to be enhanced"""
+    print(f"\n🔍 DEBUGGING DOG ENHANCEMENT FAILURE: {dog_id}")
+    print("=" * 60)
+    
+    print(f"📊 Dog Current State:")
+    print(f"  - ID: {dog.id}")
+    print(f"  - Name: '{dog.name}' (needs enhancement: {not dog.name or dog.name == ''})")
+    print(f"  - Trainer: '{dog.trainer}' (needs enhancement: {not dog.trainer or dog.trainer == ''})")
+    print(f"  - Total participations: {len(dog.race_participations)}")
+    
+    if not dog.race_participations:
+        print("❌ No race participations found - cannot enhance without race data")
+        return
+    
+    # Show sample participations
+    print(f"\n📋 Sample Race Participations (first 3):")
+    for i, participation in enumerate(dog.race_participations[:3]):
+        print(f"  {i+1}. Race ID: {participation.race_id}")
+        print(f"     - Date: {participation.race_datetime}")
+        print(f"     - Track: {participation.track_name}")
+        print(f"     - Meeting ID: {getattr(participation, 'meeting_id', 'MISSING')}")
+        print(f"     - Dog ID in participation: {participation.dog_id}")
+        print()
+    
+    # Test Method 1: Direct Dog API
+    print(f"🔍 METHOD 1: Testing Direct Dog API...")
+    direct_result = try_direct_dog_api_call(dog_id)
+    if direct_result:
+        print(f"✅ Direct API returned data: {direct_result}")
+        if direct_result.get('name'):
+            print(f"✅ Name found: '{direct_result['name']}'")
+        else:
+            print(f"⚠️ No name in direct API response")
+    else:
+        print(f"❌ Direct API call failed or returned None")
+        
+        # Test if the API endpoint itself is accessible
+        try:
+            import requests
+            url = f"https://api.gbgb.org.uk/api/results/dog/{dog_id}"
+            response = get_session().get(url, timeout=API_TIMEOUT)
+            print(f"📡 API Response Status: {response.status_code}")
+            
+            if response.status_code == 404:
+                print(f"❌ Dog {dog_id} does not exist in GBGB API")
+            elif response.status_code == 200:
+                data = response.json()
+                items = data.get("items", [])
+                print(f"📊 API returned {len(items)} items")
+                if items:
+                    first_item = items[0]
+                    print(f"📋 First item keys: {list(first_item.keys())}")
+                    print(f"📋 Dog name in API: '{first_item.get('dogName', 'MISSING')}'")
+                    print(f"📋 Trainer name in API: '{first_item.get('trainerName', 'MISSING')}'")
+                else:
+                    print(f"⚠️ API response has no items")
+            else:
+                print(f"⚠️ Unexpected API status: {response.status_code}")
+                print(f"Response text: {response.text[:200]}")
+                
+        except Exception as e:
+            print(f"❌ Error testing API directly: {e}")
+    
+    # Test Method 2: Meeting API
+    print(f"\n🔍 METHOD 2: Testing Meeting API...")
+    meeting_ids = get_meeting_ids_for_dog(dog)
+    print(f"📋 Extracted meeting IDs: {meeting_ids}")
+    
+    if not meeting_ids:
+        print(f"❌ No meeting IDs found - cannot use meeting API")
+        
+        # Debug why no meeting IDs were found
+        print(f"🔍 Debugging meeting ID extraction:")
+        for i, participation in enumerate(dog.race_participations[:3]):
+            print(f"  Participation {i+1}:")
+            print(f"    - meeting_id attribute exists: {hasattr(participation, 'meeting_id')}")
+            if hasattr(participation, 'meeting_id'):
+                print(f"    - meeting_id value: {participation.meeting_id} (type: {type(participation.meeting_id)})")
+                print(f"    - meeting_id is truthy: {bool(participation.meeting_id)}")
+            print(f"    - race_id: {participation.race_id} (type: {type(participation.race_id)})")
+    else:
+        # Test each meeting ID
+        for i, meeting_id in enumerate(meeting_ids[:2]):  # Test first 2
+            print(f"\n  Testing meeting ID {meeting_id}:")
+            try:
+                meeting_data = fetch_meeting_data_cached(meeting_id)
+                if meeting_data:
+                    print(f"  ✅ Meeting API returned data (length: {len(meeting_data)})")
+                    
+                    # Look for our dog in the meeting data
+                    dog_info = extract_dog_info_from_meeting(meeting_data, int(dog_id))
+                    if dog_info:
+                        print(f"  ✅ Dog found in meeting data: {dog_info}")
+                    else:
+                        print(f"  ⚠️ Dog not found in meeting data")
+                        
+                        # Debug why dog wasn't found
+                        if len(meeting_data) > 0:
+                            meeting = meeting_data[0]
+                            races = meeting.get('races', [])
+                            print(f"    - Meeting has {len(races)} races")
+                            
+                            all_dog_ids = []
+                            for race in races:
+                                for trap in race.get('traps', []):
+                                    trap_dog_id = trap.get('dogId')
+                                    if trap_dog_id:
+                                        all_dog_ids.append(trap_dog_id)
+                            
+                            print(f"    - All dog IDs in meeting: {set(all_dog_ids)}")
+                            print(f"    - Looking for dog ID: {int(dog_id)}")
+                            print(f"    - Target dog ID in meeting: {int(dog_id) in all_dog_ids}")
+                else:
+                    print(f"  ❌ Meeting API returned None")
+                    
+                    # Test the meeting API directly
+                    try:
+                        url = f"https://api.gbgb.org.uk/api/results/meeting/{meeting_id}"
+                        response = get_session().get(url, timeout=API_TIMEOUT)
+                        print(f"    📡 Meeting API Status: {response.status_code}")
+                        if response.status_code == 404:
+                            print(f"    ❌ Meeting {meeting_id} not found in API")
+                        elif response.status_code != 200:
+                            print(f"    ⚠️ Meeting API error: {response.text[:100]}")
+                    except Exception as e:
+                        print(f"    ❌ Error testing meeting API: {e}")
+                        
+            except Exception as e:
+                print(f"  ❌ Error testing meeting {meeting_id}: {e}")
+    
+    # Test Method 3: Race API
+    print(f"\n🔍 METHOD 3: Testing Race API...")
+    race_ids = []
+    for participation in dog.race_participations:
+        if hasattr(participation, 'race_id') and participation.race_id:
+            race_ids.append(str(participation.race_id))
+    
+    print(f"📋 Available race IDs: {race_ids[:5]}")  # Show first 5
+    
+    if not race_ids:
+        print(f"❌ No race IDs found - cannot use race API")
+    else:
+        # Test first race ID
+        test_race_id = race_ids[0]
+        print(f"\n  Testing race ID {test_race_id}:")
+        try:
+            race_result = try_race_api_call(test_race_id, dog_id)
+            if race_result:
+                print(f"  ✅ Race API returned data: {race_result}")
+            else:
+                print(f"  ❌ Race API returned None")
+                
+                # Test the race API directly
+                try:
+                    url = f"https://api.gbgb.org.uk/api/results/race/{test_race_id}"
+                    response = get_session().get(url, timeout=API_TIMEOUT)
+                    print(f"    📡 Race API Status: {response.status_code}")
+                    
+                    if response.status_code == 404:
+                        print(f"    ❌ Race {test_race_id} not found in API")
+                    elif response.status_code == 200:
+                        data = response.json()
+                        traps = data.get('traps', [])
+                        print(f"    📊 Race has {len(traps)} traps")
+                        
+                        trap_dog_ids = [str(trap.get('dogId', '')) for trap in traps]
+                        print(f"    📋 Dog IDs in race: {trap_dog_ids}")
+                        print(f"    📋 Looking for: {dog_id}")
+                        print(f"    📋 Found in race: {dog_id in trap_dog_ids}")
+                    else:
+                        print(f"    ⚠️ Race API error: {response.text[:100]}")
+                        
+                except Exception as e:
+                    print(f"    ❌ Error testing race API: {e}")
+                    
+        except Exception as e:
+            print(f"  ❌ Error testing race {test_race_id}: {e}")
+    
+    # Summary and recommendations
+    print(f"\n💡 DEBUGGING SUMMARY:")
+    print(f"  - Dog has {len(dog.race_participations)} race participations")
+    print(f"  - Meeting IDs available: {len(meeting_ids) > 0}")
+    print(f"  - Race IDs available: {len(race_ids) > 0}")
+    print(f"  - Direct API accessible: {direct_result is not None}")
+    
+    recommendations = []
+    if not direct_result:
+        recommendations.append("Dog may not exist in current GBGB API database")
+    if not meeting_ids:
+        recommendations.append("Check meeting_id extraction from race participations")
+    if not race_ids:
+        recommendations.append("Check race_id data in participations")
+    
+    if recommendations:
+        print(f"\n💡 RECOMMENDATIONS:")
+        for i, rec in enumerate(recommendations, 1):
+            print(f"  {i}. {rec}")
+    else:
+        print(f"\n🤔 All methods seem to have data - there might be a logic issue in enhance_single_dog()")
+
+def test_api_endpoints():
+    """Test API endpoints to see if they're working"""
+    print("🔍 TESTING API ENDPOINTS")
+    print("=" * 50)
+    
+    # Test dogs that we know should work
+    test_dogs = ["400000", "652000", "445700"]  # Mix of known working and potentially problematic
+    
+    for dog_id in test_dogs:
+        print(f"\n🔍 Testing Dog {dog_id}:")
+        
+        # Test Direct Dog API
+        try:
+            url = f"https://api.gbgb.org.uk/api/results/dog/{dog_id}"
+            response = get_session().get(url, timeout=10)
+            print(f"  Direct API: Status {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get("items", [])
+                print(f"    - Items: {len(items)}")
+                if items:
+                    first = items[0]
+                    print(f"    - Dog Name: '{first.get('dogName', 'MISSING')}'")
+                    print(f"    - Trainer: '{first.get('trainerName', 'MISSING')}'")
+                    print(f"    - Meeting ID: {first.get('meetingId', 'MISSING')}")
+            
+        except Exception as e:
+            print(f"  Direct API: Error - {e}")
+        
+        # Get meeting ID and test Meeting API
+        bucket_idx = get_bucket_index(dog_id)
+        dogs_dict = load_dogs_bucket(bucket_idx)
+        
+        if dogs_dict and dog_id in dogs_dict:
+            dog = dogs_dict[dog_id]
+            meeting_ids = get_meeting_ids_for_dog(dog)
+            
+            if meeting_ids:
+                meeting_id = meeting_ids[0]
+                print(f"  Testing Meeting API with ID {meeting_id}:")
+                
+                try:
+                    url = f"https://api.gbgb.org.uk/api/results/meeting/{meeting_id}"
+                    response = get_session().get(url, timeout=10)
+                    print(f"    Meeting API: Status {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        print(f"    - Meeting data length: {len(data)}")
+                        if data:
+                            meeting = data[0]
+                            races = meeting.get('races', [])
+                            print(f"    - Races in meeting: {len(races)}")
+                            
+                            # Look for our dog
+                            found = False
+                            for race in races:
+                                for trap in race.get('traps', []):
+                                    if trap.get('dogId') == int(dog_id):
+                                        found = True
+                                        print(f"    - Dog found in meeting: YES")
+                                        print(f"    - Dog name in meeting: '{trap.get('dogName', 'MISSING')}'")
+                                        break
+                                if found:
+                                    break
+                            
+                            if not found:
+                                print(f"    - Dog found in meeting: NO")
+                        
+                except Exception as e:
+                    print(f"    Meeting API: Error - {e}")
+            else:
+                print(f"  No meeting IDs available for testing")
+
+
 # Update the main menu to include the new options
 if __name__ == "__main__":
     print("🐕 Dog Enhancement Tool")
     print("Enhances dogs with names, trainers, and other missing data using GBGB API")
     print()
     
-    # Check if dog buckets exist in any of the possible locations
+    # Check if dog buckets exist in any of the possible locations - Updated paths
     bucket_found = False
-    for test_dir in ["data/dogs_enhanced", "../data/dogs_enhanced", "data/dogs", "../data/dogs"]:
+    test_dirs = [
+        "../data/dogs_enhanced", 
+        "data/dogs_enhanced", 
+        "../data/dogs", 
+        "data/dogs"
+    ]
+    
+    for test_dir in test_dirs:
         test_bucket = os.path.join(test_dir, "dogs_bucket_0.pkl")
         if os.path.exists(test_bucket):
             bucket_found = True
             print(f"✅ Found dog buckets in: {test_dir}")
+            print(f"   Full path: {os.path.abspath(test_dir)}")
             break
     
     if not bucket_found:
         print(f"❌ Dog buckets not found in any expected location")
-        print("💡 Available options:")
+        print("💡 Searched in:")
+        for test_dir in test_dirs:
+            abs_path = os.path.abspath(test_dir)
+            exists = os.path.exists(test_dir)
+            print(f"  - {test_dir} -> {abs_path} ({'✅' if exists else '❌'})")
+        
+        print("\n💡 Available options:")
         print("  1. Run build_and_save_dogs.py first to create dog buckets")
         print("  2. Create buckets from CSV data automatically")
         print("  3. Check data structure to see what exists")
@@ -1446,7 +1811,7 @@ if __name__ == "__main__":
             sys.exit(1)
     
     # Show available options
-        print("Available options:")
+    print("Available options:")
     print("1. Get enhancement statistics")
     print("2. Test enhancement (1 bucket)")
     print("3. Test single dog")
@@ -1460,11 +1825,12 @@ if __name__ == "__main__":
     print("11. Quick bucket stats")
     print("12. Convert all SP values to decimal")
     print("13. Verify SP conversions")
-    print("14. Analyze unconverted SP formats")  # New option
+    print("14. Analyze unconverted SP formats")
+    print("15. Debug enhancement failures")  # New option
+    print("16. Test API endpoints")  # New option
     print()
     
-    choice = input("Enter choice (1-14): ").strip()
-    
+    choice = input("Enter choice (1-16): ").strip()
     
     if choice == '1':
         get_enhancement_stats()
@@ -1505,5 +1871,9 @@ if __name__ == "__main__":
         verify_sp_conversions(bucket_num)
     elif choice == '14':
         analyze_unconverted_sp_formats()
+    elif choice == '15':
+        debug_enhancement_failures()
+    elif choice == '16':
+        test_api_endpoints()
     else:
         print("Invalid choice")
