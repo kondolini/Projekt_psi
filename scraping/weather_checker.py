@@ -8,20 +8,22 @@ def get_weather(date: str, time: str, place: str):
     """
     Fetches weather data (past 7 days rainfall, humidity and temperature) for a specific date, time, and location.
 
+    Uses forecast endpoint for dates within API's forecast range, and archive endpoint for historical dates beyond that.
+
     Args:
         date (str): Date in YYYY-MM-DD format.
         time (str): Time in HH:MM format (must be on the hour).
         place (str): Location name.
-    
+
     Returns:
         dict: {
             'rainfall_7d': [float],  # mm rainfall for each of past 7 days (including the date)
             'humidity': float,       # % humidity at that hour
             'temperature': float     # °C at that hour
-        }
+        } or None on error.
     """
     try:
-        # Step 1: Geocode the location
+        # Geocode the location
         geolocator = Nominatim(user_agent="weather_checker")
         location = geolocator.geocode(place)
         if not location:
@@ -31,16 +33,22 @@ def get_weather(date: str, time: str, place: str):
         latitude = location.latitude
         longitude = location.longitude
 
-        # Step 2: Date range for rainfall history
+        # Compute date window
         end_date = datetime.fromisoformat(date)
         start_date = end_date - timedelta(days=6)
+        today = datetime.utcnow()
 
         # Format dates
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
 
-        # Step 3: Request both daily and hourly data
-        api_url = "https://api.open-meteo.com/v1/forecast"
+        # Choose endpoint: forecast for future or recent, archive for older dates
+        # Forecast API typically covers up to 16 days ahead but restricts past days
+        if end_date.date() >= today.date() - timedelta(days=6):
+            api_base = "https://api.open-meteo.com/v1/forecast"
+        else:
+            api_base = "https://archive-api.open-meteo.com/v1/archive"
+
         params = {
             "latitude": latitude,
             "longitude": longitude,
@@ -51,38 +59,57 @@ def get_weather(date: str, time: str, place: str):
             "end_date": end_str
         }
 
-        response = requests.get(api_url, params=params)
+        response = requests.get(api_base, params=params)
         response.raise_for_status()
         data = response.json()
 
-        # Step 4: Extract rainfall
+        # Extract rainfall
         rainfall_7d = data.get("daily", {}).get("precipitation_sum", [])
         if len(rainfall_7d) != 7:
             print("Warning: Rainfall data missing or incomplete.")
 
-        # Step 5: Extract hourly humidity and temperature for target time
+        # Extract hourly humidity and temperature for target time
         hourly = data.get("hourly", {})
         timestamps = hourly.get("time", [])
         target_timestamp = f"{date}T{time}"
+        temperature = None
+        humidity = None
+        if timestamps:
+            try:
+                idx = timestamps.index(target_timestamp)
+                temperature = hourly.get("temperature_2m", [])[idx]
+                humidity = hourly.get("relativehumidity_2m", [])[idx]
+            except ValueError:
+                # Nearest hour lookup
+                # Parse timestamps into datetimes
+                times_dt = [datetime.fromisoformat(ts) for ts in timestamps]
+                target_dt = datetime.fromisoformat(target_timestamp)
+                # Find closest timestamp
+                diffs = [abs((t - target_dt).total_seconds()) for t in times_dt]
+                min_idx = diffs.index(min(diffs))
+                temperature = hourly.get("temperature_2m", [])[min_idx]
+                humidity = hourly.get("relativehumidity_2m", [])[min_idx]
+                print(f"Info: Using nearest hour data at {timestamps[min_idx]} for target {target_timestamp}.")
+        else:
+            print("Warning: No hourly data available at all.")
 
-        try:
-            index = timestamps.index(target_timestamp)
-            temperature = hourly.get("temperature_2m", [])[index]
-            humidity = hourly.get("relativehumidity_2m", [])[index]
-        except (ValueError, IndexError):
-            print(f"Error: No data available for {target_timestamp}. Check time format (e.g., '14:00').")
-            return None
-
-        # Step 6: Return results
         return {
             "rainfall_7d": rainfall_7d,
             "humidity": humidity,
             "temperature": temperature
         }
 
+        return {
+            "rainfall_7d": rainfall_7d,
+            "humidity": humidity,
+            "temperature": temperature
+        }
+
+    except requests.HTTPError as http_err:
+        print(f"HTTP error: {http_err}")
     except Exception as e:
         print(f"An error occurred: {e}")
-        return None
+    return None
 
 
 if __name__ == "__main__":

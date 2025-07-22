@@ -38,3 +38,25 @@ class Track:
             geometry=None,      # Extend later if available in source
             notes=None          # Optional notes field
         )
+
+def load_all_tracks(tracks_dir: str = "data/tracks") -> dict:
+    """Load all track objects from pickle files in the tracks directory"""
+    import os
+    import pickle
+    
+    tracks = {}
+    if not os.path.exists(tracks_dir):
+        print(f"Warning: Tracks directory {tracks_dir} does not exist")
+        return tracks
+    
+    for fname in os.listdir(tracks_dir):
+        if fname.endswith(".pkl"):
+            try:
+                with open(os.path.join(tracks_dir, fname), "rb") as f:
+                    track = pickle.load(f)
+                    tracks[track.name] = track
+            except Exception as e:
+                print(f"Error loading track from {fname}: {e}")
+                continue
+    
+    return tracks

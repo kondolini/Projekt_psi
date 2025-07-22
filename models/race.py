@@ -103,7 +103,17 @@ class Race:
         if all(o is None for o in odds.values()):
             odds = None
         race_times = {trap: p.run_time for trap, p in trap_map.items()}
-        commentary_tags = {trap: [] for trap in trap_map}
+        
+        # Extract commentary tags from race participation comments
+        commentary_tags = {}
+        for trap, p in trap_map.items():
+            if p.comment:
+                # Parse comment into tags (split by comma and clean)
+                tags = [tag.strip() for tag in p.comment.split(',') if tag.strip()]
+                commentary_tags[trap] = tags
+            else:
+                commentary_tags[trap] = []
+        
         weights = {trap: p.weight for trap, p in trap_map.items()}
 
         return cls(
