@@ -21,14 +21,15 @@ from models.dog import Dog
 
 # Configuration
 NUM_BUCKETS = int(os.getenv('NUM_BUCKETS', 100))
-MAX_WORKERS = 15  # Concurrent API calls
-BATCH_SIZE = 25   # Process dogs in batches
-API_TIMEOUT = 5
+MAX_WORKERS = int(os.getenv('MAX_WORKERS', 15))
+BATCH_SIZE = int(os.getenv('BATCH_SIZE', 25))
+API_TIMEOUT = int(os.getenv('API_TIMEOUT', 5))
 SAVE_PROGRESS_EVERY = 50
 
-# Paths from environment
-dogs_dir = os.getenv('DOGS_DIR', 'data/dogs')
-enhanced_dogs_dir = os.getenv('DOGS_ENHANCED_DIR', 'data/dogs_enhanced')
+# Get absolute paths from environment variables
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+dogs_dir = os.path.join(project_root, os.getenv('DOGS_DIR', 'data/dogs'))
+enhanced_dogs_dir = os.path.join(project_root, os.getenv('DOGS_ENHANCED_DIR', 'data/dogs_enhanced'))
 
 # Ensure output directory exists
 os.makedirs(enhanced_dogs_dir, exist_ok=True)
@@ -101,16 +102,13 @@ def get_bucket_index(dog_id: str) -> int:
 
 def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
     """Load a bucket of dogs from pickle file"""
-    # Try multiple possible locations based on where build_and_save_dogs.py saves
+    # Try multiple possible locations with proper project root
     possible_paths = [
-        os.path.join("../data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # Main project data directory
-        os.path.join("data/dogs_enhanced", f"dogs_bucket_{bucket_idx}.pkl"),  # If run from project root
-        os.path.join("../data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative location
-        os.path.join("data/dogs", f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative from project root
+        os.path.join(enhanced_dogs_dir, f"dogs_bucket_{bucket_idx}.pkl"),  # Primary enhanced location
+        os.path.join(dogs_dir, f"dogs_bucket_{bucket_idx}.pkl"),  # Alternative dogs location
     ]
     
     for bucket_path in possible_paths:
-        abs_path = os.path.abspath(bucket_path)
         if os.path.exists(bucket_path):
             try:
                 with open(bucket_path, "rb") as f:
@@ -120,31 +118,14 @@ def load_dogs_bucket(bucket_idx: int) -> Optional[Dict[str, Dog]]:
                 continue
     
     print(f"❌ Bucket {bucket_idx} not found in any location")
-    print(f"💡 Looking for buckets in:")
-    for path in possible_paths:
-        abs_path = os.path.abspath(path)
-        print(f"  - {path} -> {abs_path} ({'✅' if os.path.exists(path) else '❌'})")
-    
-    # Debug: Show what files actually exist in current directory
-    print(f"💡 Current working directory: {os.getcwd()}")
-    if os.path.exists("../data"):
-        print(f"💡 Contents of ../data/ directory:")
-        for item in os.listdir("../data"):
-            item_path = os.path.join("../data", item)
-            if os.path.isdir(item_path):
-                files = os.listdir(item_path)
-                bucket_files = [f for f in files if f.startswith('dogs_bucket_')]
-                print(f"  📁 {item}: {len(bucket_files)} bucket files")
-    
     return None
 
 def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool = False):
     """Save a bucket of dogs to pickle file"""
-    # Save to the correct directory that matches where the buckets actually are
     if enhanced:
-        output_dir = "../data/dogs_enhanced"  # Main project directory
+        output_dir = enhanced_dogs_dir
     else:
-        output_dir = "../data/dogs"  # Main project directory
+        output_dir = dogs_dir
     
     # Ensure the directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -154,7 +135,7 @@ def save_dogs_bucket(bucket_idx: int, dogs_dict: Dict[str, Dog], enhanced: bool 
     try:
         with open(bucket_path, "wb") as f:
             pickle.dump(dogs_dict, f)
-        print(f"💾 Saved to: {os.path.abspath(bucket_path)}")  # Debug: show where it's saved
+        print(f"💾 Saved to: {os.path.abspath(bucket_path)}")
         return True
     except Exception as e:
         print(f"❌ Error saving bucket {bucket_idx}: {e}")
@@ -2076,142 +2057,3 @@ def assign_parents_from_meeting_api_in_bucket(bucket_idx: int):
         print(f"✅ Updated parents for {updated_count} dogs in bucket {bucket_idx}")
     else:
         print(f"⏭️ No parent updates needed in bucket {bucket_idx}")
-
-# Update the main menu to include the new options
-if __name__ == "__main__":
-    print("🐕 Dog Enhancement Tool")
-    print("Enhances dogs with names, trainers, and other missing data using GBGB API")
-    print()
-    
-    # Check if dog buckets exist in any of the possible locations - Updated paths
-    bucket_found = False
-    test_dirs = [
-        "../data/dogs_enhanced", 
-        "data/dogs_enhanced", 
-        "../data/dogs", 
-        "data/dogs"
-    ]
-    
-    for test_dir in test_dirs:
-        test_bucket = os.path.join(test_dir, "dogs_bucket_0.pkl")
-        if os.path.exists(test_bucket):
-            bucket_found = True
-            print(f"✅ Found dog buckets in: {test_dir}")
-            print(f"   Full path: {os.path.abspath(test_dir)}")
-            break
-    
-    if not bucket_found:
-        print(f"❌ Dog buckets not found in any expected location")
-        print("💡 Searched in:")
-        for test_dir in test_dirs:
-            abs_path = os.path.abspath(test_dir)
-            exists = os.path.exists(test_dir)
-            print(f"  - {test_dir} -> {abs_path} ({'✅' if exists else '❌'})")
-        
-        print("\n💡 Available options:")
-        print("  1. Run build_and_save_dogs.py first to create dog buckets")
-        print("  2. Create buckets from CSV data automatically")
-        print("  3. Check data structure to see what exists")
-        
-        choice = input("Choose option (1/2/3): ").strip()
-        if choice == '2':
-            if create_dog_buckets_from_csv():
-                print("✅ Buckets created successfully!")
-            else:
-                print("❌ Failed to create buckets")
-                sys.exit(1)
-        elif choice == '3':
-            check_data_structure()
-            sys.exit(0)
-        else:
-            print("💡 Please run build_and_save_dogs.py manually first")
-            sys.exit(1)
-    
-    # Show available options
-    print("Available options:")
-    print("1. Get enhancement statistics")
-    print("2. Test enhancement (1 bucket)")
-    print("3. Test single dog")
-    print("4. Check data structure")
-    print("5. Check enhancement progress")
-    print("6. Enhance all dogs")
-    print("7. View enhanced dog")
-    print("8. Compare enhancement results")
-    print("9. List sample enhanced dogs")
-    print("10. Search dogs by name")
-    print("11. Quick bucket stats")
-    print("12. Convert all SP values to decimal")
-    print("13. Verify SP conversions")
-    print("14. Analyze unconverted SP formats")
-    print("15. Debug enhancement failures")  # New option
-    print("16. Test API endpoints")  # New option
-    print("17. Assign parent Dog objects from names (post-enhancement)")
-    print("18. Assign parent Dog objects from names in a chosen bucket (progress shown)")
-    print("19. Assign parent names from meeting API in a chosen bucket (progress shown)")
-    print("20. Assign parent names from meeting API in ALL buckets (progress shown)")
-    print()
-    choice = input("Enter choice (1-20): ").strip()
-
-    if choice == '1':
-        get_enhancement_stats()
-    elif choice == '2':
-        test_enhancement(1)
-    elif choice == '3':
-        dog_id = input("Enter dog ID to test: ").strip()
-        test_single_dog(dog_id)
-    elif choice == '4':
-        check_data_structure()
-    elif choice == '5':
-        check_enhancement_progress()
-    elif choice == '6':
-        enhance_all_dogs()
-    elif choice == '7':
-        dog_id = input("Enter dog ID to view: ").strip()
-        view_enhanced_dog(dog_id)
-    elif choice == '8':
-        compare_enhancement_results()
-    elif choice == '9':
-        count = input("How many dogs to show (default 10): ").strip()
-        count = int(count) if count.isdigit() else 10
-        list_sample_enhanced_dogs(count)
-    elif choice == '10':
-        name_pattern = input("Enter name pattern to search: ").strip()
-        find_dogs_by_name_pattern(name_pattern)
-    elif choice == '11':
-        bucket_num = input("Enter bucket number (0-99): ").strip()
-        if bucket_num.isdigit():
-            quick_bucket_stats(int(bucket_num))
-        else:
-            print("Invalid bucket number")
-    elif choice == '12':
-        convert_all_sp_to_decimal()
-    elif choice == '13':
-        bucket_num = input("Enter bucket number to verify (default 0): ").strip()
-        bucket_num = int(bucket_num) if bucket_num.isdigit() else 0
-        verify_sp_conversions(bucket_num)
-    elif choice == '14':
-        analyze_unconverted_sp_formats()
-    elif choice == '15':
-        debug_enhancement_failures()
-    elif choice == '16':
-        test_api_endpoints()
-    elif choice == '17':
-        assign_parents_from_names_by_id()    
-    elif choice == '18':
-        bucket_idx = input("Enter bucket index to assign parents (0-99): ").strip()
-        if bucket_idx.isdigit():
-            assign_parents_in_bucket(int(bucket_idx))
-        else:
-            print("Invalid bucket index")
-    elif choice == '19':
-        bucket_idx = input("Enter bucket index to assign parents from meeting API (0-99): ").strip()
-        if bucket_idx.isdigit():
-            assign_parents_from_meeting_api_in_bucket(int(bucket_idx))
-        else:
-            print("Invalid bucket index")
-    elif choice == '20':
-        print("Assign parent names from meeting API in ALL buckets (progress shown)")
-        for bucket_idx in range(NUM_BUCKETS):
-            assign_parents_from_meeting_api_in_bucket(bucket_idx)
-    else:
-        print("Invalid choice")

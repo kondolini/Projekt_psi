@@ -124,6 +124,13 @@ def parse_race_participation(row: dict) -> Optional[RaceParticipation]:
         except (ValueError, TypeError):
             return None
 
+    # Fix meeting_id conversion
+    meeting_id = row.get("meetingId")
+    if isinstance(meeting_id, float):
+        meeting_id = str(int(meeting_id))
+    elif meeting_id is not None:
+        meeting_id = str(meeting_id)
+
     return RaceParticipation(
         dog_id=row["dogId"],
         race_id=row["raceId"],
@@ -143,5 +150,5 @@ def parse_race_participation(row: dict) -> Optional[RaceParticipation]:
         distance=safe_float(row.get("raceDistance")),
         going=row.get("raceGoing"),
         win_time=safe_float(row.get("raceWinTime")),
-        meeting_id=row.get("meetingId"),  # <-- Added extraction
+        meeting_id=meeting_id,  # Use the converted meeting_id
     )

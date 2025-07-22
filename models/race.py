@@ -204,3 +204,41 @@ class Race:
             print(f"Humidity: {self.humidity}")
         print(f"Commentary Tags: {self.commentary_tags}")
 
+    @staticmethod
+    def load_race_by_key(race_key, race_index: dict):
+        """Load a race by its key using the race index"""
+        if race_key not in race_index:
+            return None
+        
+        race_info = race_index[race_key]
+        bucket_path = race_info['path']
+        storage_key = race_info['key']
+        
+        try:
+            with open(bucket_path, 'rb') as f:
+                races_bucket = pickle.load(f)
+            return races_bucket.get(storage_key)
+        except Exception as e:
+            print(f"Error loading race {race_key}: {e}")
+            return None
+
+    @staticmethod
+    def load_all_races_from_buckets(race_output_dir: str) -> Dict[str, "Race"]:
+        """Load all races from bucket files"""
+        all_races = {}
+        
+        for bucket_file in os.listdir(race_output_dir):
+            if bucket_file.startswith('races_bucket_') and bucket_file.endswith('.pkl'):
+                bucket_path = os.path.join(race_output_dir, bucket_file)
+                try:
+                    with open(bucket_path, 'rb') as f:
+                        races_bucket = pickle.load(f)
+                    
+                    for storage_key, race in races_bucket.items():
+                        all_races[storage_key] = race
+                        
+                except Exception as e:
+                    print(f"Error loading race bucket {bucket_file}: {e}")
+        
+        return all_races
+

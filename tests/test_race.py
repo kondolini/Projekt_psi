@@ -21,8 +21,9 @@ from models.track import Track
 from scraping.weather_checker import get_weather
 
 # Test configuration
-NUM_BUCKETS = 100
-TEST_DATA_DIR = os.path.join(parent_dir, 'test_data')
+NUM_BUCKETS = int(os.getenv('NUM_BUCKETS', 100))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+TEST_DATA_DIR = os.path.join(project_root, os.getenv('TEST_DATA_DIR', 'test_data'))
 
 class TestRaceConstruction(unittest.TestCase):
     """Test race construction with pedigree relationships and weather data"""
@@ -54,9 +55,13 @@ class TestRaceConstruction(unittest.TestCase):
     @classmethod
     def load_source_data(cls):
         """Load dogs and participations from source directories"""
-        # Load dogs from enhanced directory
-        dogs_enhanced_dir = os.path.join(parent_dir, 'data/dogs_enhanced')
+        # Load dogs from enhanced directory using absolute paths
+        dogs_enhanced_dir = os.path.join(project_root, os.getenv('DOGS_ENHANCED_DIR', 'data/dogs_enhanced'))
         cls.dog_lookup = {}
+        
+        if not os.path.exists(dogs_enhanced_dir):
+            print(f"Warning: Enhanced dogs directory not found: {dogs_enhanced_dir}")
+            return
         
         for fname in os.listdir(dogs_enhanced_dir):
             if fname.endswith('.pkl'):
@@ -66,9 +71,13 @@ class TestRaceConstruction(unittest.TestCase):
                         if isinstance(dog_obj, Dog):
                             cls.dog_lookup[dog_id] = dog_obj
 
-        # Load race participations and group by race
-        parts_dir = os.path.join(parent_dir, 'data/race_participations')
+        # Load race participations using absolute paths
+        parts_dir = os.path.join(project_root, os.getenv('RACE_PARTICIPATIONS_DIR', 'data/race_participations'))
         race_parts = defaultdict(list)
+        
+        if not os.path.exists(parts_dir):
+            print(f"Warning: Race participations directory not found: {parts_dir}")
+            return
         
         for fname in os.listdir(parts_dir):
             if fname.endswith('.pkl'):
@@ -86,8 +95,8 @@ class TestRaceConstruction(unittest.TestCase):
         cls.dog_name_map = {}
         cls.artificial_id_counter = 100000
         
-        # Load existing dog name mapping if available
-        source_csv = os.path.join(parent_dir, 'data/dog_name_dict.csv')
+        # Load existing dog name mapping using absolute path
+        source_csv = os.path.join(project_root, os.getenv('DOG_NAME_CSV', 'data/dog_name_dict.csv'))
         if os.path.exists(source_csv):
             with open(source_csv, newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -425,12 +434,28 @@ class TestRaceConstruction(unittest.TestCase):
         """Test race can be saved and loaded with all data intact"""
         race_key, race = next(iter(self.races.items()))
         
-        # Save race
-        race_path = os.path.join(self.test_races_dir, f"test_race_{race.race_id}_{race.meeting_id}.pkl")
-        race.save(race_path)
+        # Save race in bucket format
+        bucket_idx = int(race.race_id) % NUM_BUCKETS
+        bucket_path = os.path.join(self.test_races_dir, f"races_bucket_{bucket_idx}.pkl")
         
-        # Load race
-        loaded_race = Race.load(race_path)
+        # Create or load existing bucket
+        races_bucket = {}
+        if os.path.exists(bucket_path):
+            with open(bucket_path, 'rb') as f:
+                races_bucket = pickle.load(f)
+        
+        # Add race to bucket
+        storage_key = f"{race.race_id}_{race.meeting_id}"
+        races_bucket[storage_key] = race
+        
+        # Save bucket
+        with open(bucket_path, 'wb') as f:
+            pickle.dump(races_bucket, f)
+        
+        # Load race from bucket
+        with open(bucket_path, 'rb') as f:
+            loaded_bucket = pickle.load(f)
+        loaded_race = loaded_bucket[storage_key]
         
         # Verify all data preserved
         self.assertEqual(loaded_race.race_id, race.race_id)
@@ -441,7 +466,7 @@ class TestRaceConstruction(unittest.TestCase):
         self.assertEqual(loaded_race.humidity, race.humidity)
         self.assertEqual(loaded_race.commentary_tags, race.commentary_tags)
         
-        print(f"✓ Race successfully saved and loaded: {race_path}")
+        print(f"✓ Race successfully saved and loaded in bucket format: {bucket_path}")
 
     def test_parent_offspring_mapping(self):
         """Test parent-offspring relationships are correctly established"""
@@ -501,7 +526,10 @@ class TestRaceConstruction(unittest.TestCase):
 
 def load_all_tracks() -> dict:
     tracks = {}
-    tracks_dir = os.path.join(parent_dir, 'data/tracks')
+    tracks_dir = os.path.join(project_root, os.getenv('TRACKS_DIR', 'data/tracks'))
+    if not os.path.exists(tracks_dir):
+        return tracks
+    
     for fname in os.listdir(tracks_dir):
         if fname.endswith(".pkl"):
             with open(os.path.join(tracks_dir, fname), "rb") as f:

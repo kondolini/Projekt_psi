@@ -20,13 +20,14 @@ from models.race_participation import parse_race_participation
 # Config
 NUM_BUCKETS = int(os.getenv('NUM_BUCKETS', 100))
 
-# Paths from environment
-data_dir = os.getenv('SCRAPED_DIR', 'data/scraped')
-dogs_output_dir = os.getenv('DOGS_DIR', 'data/dogs')
-tracks_output_dir = os.getenv('TRACKS_DIR', 'data/tracks')
-participation_output_dir = os.getenv('RACE_PARTICIPATIONS_DIR', 'data/race_participations')
-unified_dir = os.getenv('UNIFIED_DIR', 'data/unified')
-scraped_data_csv = os.getenv('SCRAPED_DATA_CSV', 'data/scraped/scraped_data.csv')
+# Get absolute paths from environment variables
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+data_dir = os.path.join(project_root, os.getenv('SCRAPED_DIR', 'data/scraped'))
+dogs_output_dir = os.path.join(project_root, os.getenv('DOGS_DIR', 'data/dogs'))
+tracks_output_dir = os.path.join(project_root, os.getenv('TRACKS_DIR', 'data/tracks'))
+participation_output_dir = os.path.join(project_root, os.getenv('RACE_PARTICIPATIONS_DIR', 'data/race_participations'))
+unified_dir = os.path.join(project_root, os.getenv('UNIFIED_DIR', 'data/unified'))
+scraped_data_csv = os.path.join(project_root, os.getenv('SCRAPED_DATA_CSV', 'data/scraped/scraped_data.csv'))
 
 # Create directories
 os.makedirs(dogs_output_dir, exist_ok=True)
@@ -113,6 +114,9 @@ def build_and_save_dogs():
             pickle.dump(track, f)
 
     # Save unified indexes
+    unified_race_index_path = os.path.join(unified_dir, "race_to_dog_index.pkl")
+    unified_participation_index_path = os.path.join(unified_dir, "race_index.pkl")
+    
     with open(unified_race_index_path, "wb") as f:
         pickle.dump(dict(race_to_dog_index), f)
 
