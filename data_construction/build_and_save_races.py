@@ -57,7 +57,7 @@ def build_and_save_races(
     # Build comprehensive parent-offspring mapping with artificial parent creation
     missing = defaultdict(list)
     parent_offspring = defaultdict(list)
-    artificial_id_counter = 100000  # Start artificial parent IDs at 100000
+    artificial_id_counter = 100000
     
     # First pass: identify existing relationships and collect missing parents
     for dog in dog_lookup.values():
@@ -70,15 +70,15 @@ def build_and_save_races(
                     setattr(dog, rel, parent)
                     parent_offspring[pid].append(dog.id)
                 else:
-                    missing[val].append(dog.id)
+                    missing[val].append((dog.id, rel))
             elif isinstance(val, Dog):
                 parent_offspring[val.id].append(dog.id)
 
-    # Create artificial parents for missing ones with numeric IDs in range 100000-300000
+    # Create artificial parents with proper IDs and update dog_name_map
     artificial_parents_created = 0
-    for pname, children in missing.items():
+    for pname, child_relationships in missing.items():
         if artificial_id_counter >= 300000:
-            print("Warning: Reached maximum artificial parent ID limit (300000)")
+            print("Warning: Reached maximum artificial parent ID limit")
             break
             
         art_id = str(artificial_id_counter)
@@ -89,23 +89,33 @@ def build_and_save_races(
         art.set_name(pname)
         
         # Calculate average weight from children
-        ws = [dog_lookup[c].weight for c in children if dog_lookup[c].weight]
-        if ws:
-            art.set_weight(sum(ws)/len(ws))
+        child_weights = []
+        for child_id, _ in child_relationships:
+            child = dog_lookup[child_id]
+            if child.weight:
+                child_weights.append(child.weight)
         
-        # Add to dog lookup
+        if child_weights:
+            art.set_weight(sum(child_weights) / len(child_weights))
+        
+        # Add to lookup and name mapping
         dog_lookup[art_id] = art
+        dog_name_map[pname] = art_id
         
         # Update children to reference artificial parent
-        for cid in children:
-            child = dog_lookup[cid]
-            if getattr(child, 'sire') == pname:
-                child.sire = art
-            if getattr(child, 'dam') == pname:
-                child.dam = art
-            parent_offspring[art_id].append(cid)
+        for child_id, rel_name in child_relationships:
+            child = dog_lookup[child_id]
+            setattr(child, rel_name, art)
+            parent_offspring[art_id].append(child_id)
 
-    print(f"Created {artificial_parents_created} artificial parents with IDs {100000}-{artificial_id_counter-1}")
+    print(f"Created {artificial_parents_created} artificial parents")
+
+    # Save updated dog name mapping
+    with open(dog_name_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=['dogName', 'dogId'])
+        writer.writeheader()
+        for name, dog_id in dog_name_map.items():
+            writer.writerow({'dogName': name, 'dogId': dog_id})
 
     # Save enhanced dogs (including artificial parents) back to buckets
     dog_buckets = defaultdict(dict)
