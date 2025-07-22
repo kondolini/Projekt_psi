@@ -5,6 +5,10 @@ from typing import Optional
 import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, parent_dir)
@@ -13,19 +17,18 @@ from models.dog import Dog
 from models.track import Track
 from models.race_participation import parse_race_participation
 
-#ajej
 # Config
-NUM_BUCKETS = 100
+NUM_BUCKETS = int(os.getenv('NUM_BUCKETS', 100))
 
-# Paths
-data_dir = "../data/scraped"
-dogs_output_dir = "../data/dogs"
-tracks_output_dir = "../data/tracks"
-participation_output_dir = "../data/race_participations"
-unified_dir = "../data/unified"
-unified_race_index_path = os.path.join(unified_dir, "race_to_dog_index.pkl")
-unified_participation_index_path = os.path.join(unified_dir, "race_index.pkl")
+# Paths from environment
+data_dir = os.getenv('SCRAPED_DIR', 'data/scraped')
+dogs_output_dir = os.getenv('DOGS_DIR', 'data/dogs')
+tracks_output_dir = os.getenv('TRACKS_DIR', 'data/tracks')
+participation_output_dir = os.getenv('RACE_PARTICIPATIONS_DIR', 'data/race_participations')
+unified_dir = os.getenv('UNIFIED_DIR', 'data/unified')
+scraped_data_csv = os.getenv('SCRAPED_DATA_CSV', 'data/scraped/scraped_data.csv')
 
+# Create directories
 os.makedirs(dogs_output_dir, exist_ok=True)
 os.makedirs(tracks_output_dir, exist_ok=True)
 os.makedirs(participation_output_dir, exist_ok=True)
@@ -58,7 +61,7 @@ def save_dog(dog: Dog):
 
 # Main function
 def build_and_save_dogs():
-    df = pd.read_csv(os.path.join(data_dir, "scraped_data.csv"))
+    df = pd.read_csv(scraped_data_csv)
     grouped = df.groupby("dogId")
 
     race_to_dog_index = defaultdict(list)

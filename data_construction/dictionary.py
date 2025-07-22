@@ -16,11 +16,12 @@ def build_name_to_id_dict_and_csv(
 ):
     """
     Build a dictionary mapping dog names to dog IDs from all enhanced buckets,
-    and save it as both a pickle and a CSV file.
+    including artificial parents with IDs 100000-300000.
     """
     name_to_id = {}
     total_dogs = 0
     dogs_with_names = 0
+    artificial_parents = 0
 
     for bucket_idx in range(100):
         bucket_path = os.path.join(buckets_dir, f"dogs_bucket_{bucket_idx}.pkl")
@@ -33,8 +34,14 @@ def build_name_to_id_dict_and_csv(
             if dog.name and dog.name.strip():
                 name_to_id[dog.name.strip()] = dog_id
                 dogs_with_names += 1
+                
+                # Count artificial parents
+                if int(dog_id) >= 100000 and int(dog_id) < 300000:
+                    artificial_parents += 1
 
     print(f"✅ Built name-to-id dictionary for {dogs_with_names} dogs with names (out of {total_dogs} total)")
+    print(f"   - Real dogs: {dogs_with_names - artificial_parents}")
+    print(f"   - Artificial parents: {artificial_parents}")
 
     # Save as pickle
     with open(output_pickle, "wb") as f:

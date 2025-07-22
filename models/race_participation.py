@@ -48,6 +48,15 @@ class RaceParticipation:
         self.win_time = win_time
         self.meeting_id = meeting_id
 
+    @property
+    def commentary_tags(self) -> list:
+        """Parse comment field into structured tags"""
+        if not self.comment:
+            return []
+        # Simple parsing - split by comma and clean
+        tags = [tag.strip() for tag in self.comment.split(',') if tag.strip()]
+        return tags
+
     def __lt__(self, other):
         return self.race_datetime < other.race_datetime
 

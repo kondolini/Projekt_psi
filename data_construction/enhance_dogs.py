@@ -7,6 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from functools import lru_cache
 from typing import Optional, Dict, List
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add project root to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -16,15 +20,15 @@ sys.path.insert(0, parent_dir)
 from models.dog import Dog
 
 # Configuration
-NUM_BUCKETS = 100
+NUM_BUCKETS = int(os.getenv('NUM_BUCKETS', 100))
 MAX_WORKERS = 15  # Concurrent API calls
 BATCH_SIZE = 25   # Process dogs in batches
 API_TIMEOUT = 5
 SAVE_PROGRESS_EVERY = 50
 
-# Paths - Fix these to match your actual directory structure
-dogs_dir = "../data/dogs_enhanced"  # Changed from "../data/dogs_enhanced"
-enhanced_dogs_dir = "../data/dogs_enhanced"  # Changed from "../data/dogs_enhanced"
+# Paths from environment
+dogs_dir = os.getenv('DOGS_DIR', 'data/dogs')
+enhanced_dogs_dir = os.getenv('DOGS_ENHANCED_DIR', 'data/dogs_enhanced')
 
 # Ensure output directory exists
 os.makedirs(enhanced_dogs_dir, exist_ok=True)
