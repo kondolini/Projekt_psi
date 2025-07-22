@@ -262,6 +262,11 @@ def enhance_single_dog(dog_data):
             direct_success = True
         if dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
             dog.set_trainer(dog_info['trainer'])
+        # After setting name, trainer, birth_date, color...
+        if dog_info.get('sire'):
+            dog.sire = dog_info['sire']  # Save as string for now
+        if dog_info.get('dam'):
+            dog.dam = dog_info['dam']    # Save as string for now    
         if direct_success:
             return dog_id, dog, True, "direct_api"
 
@@ -278,6 +283,10 @@ def enhance_single_dog(dog_data):
                     dog.set_name(dog_info['name'])
                 if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
                     dog.set_trainer(dog_info['trainer'])
+                if dog_info and dog_info.get('sire'):
+                    dog.sire = dog_info['sire']  # Save as string for now
+                if dog_info and dog_info.get('dam'):
+                    dog.dam = dog_info['dam']    # Save as string for now
                 if dog_info and dog_info.get('name'):
                     if dog_info.get('born'):
                         try:
@@ -304,6 +313,10 @@ def enhance_single_dog(dog_data):
             dog.set_name(dog_info['name'])
         if dog_info and dog_info.get('trainer') and (not dog.trainer or dog.trainer == ''):
             dog.set_trainer(dog_info['trainer'])
+        if dog_info and dog_info.get('sire'):
+            dog.sire = dog_info['sire']  # Save as string for now
+        if dog_info and dog_info.get('dam'):
+            dog.dam = dog_info['dam']    # Save as string for now
         if dog_info and dog_info.get('name'):
             if dog_info.get('born'):
                 try:
@@ -762,6 +775,8 @@ def test_single_dog(dog_id: str):
     print(f"\n🚀 Running full enhancement test...")
     result = enhance_single_dog((dog_id, dog))
     dog_id_result, enhanced_dog, success, method = result
+    dogs_dict[str(dog_id)] = enhanced_dog
+    save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True)
     
     print(f"\n📈 Enhancement result:")
     print(f"  - Success: {success}")
@@ -770,17 +785,37 @@ def test_single_dog(dog_id: str):
     print(f"  - New trainer: '{enhanced_dog.trainer}'")
 
 def view_enhanced_dog(dog_id: str):
-    """View detailed information about an enhanced dog"""
+    """View detailed information about an enhanced dog, including sire/dam info if available"""
+    import csv
+
     print(f"🔍 VIEWING ENHANCED DOG: {dog_id}")
     print("=" * 40)
-    
+
     # Debug: Calculate and show bucket info first
     bucket_idx = get_bucket_index(dog_id)
     print(f"💡 Dog {dog_id} should be in bucket {bucket_idx}")
-    
+
     # Try to load from enhanced folder first
     enhanced_dog = load_enhanced_dog_by_id(dog_id)
-    
+
+    # Load dog name dictionary for sire/dam lookup
+    dog_name_to_id = {}
+    dog_name_dict_path = os.path.join("../data/dogs_enhanced", "dog_name_dict.csv")
+    if os.path.exists(dog_name_dict_path):
+        with open(dog_name_dict_path, newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                dog_name_to_id[row['dogName']] = row['dogId']
+
+    def get_dog_by_name(name: str):
+        dog_id_lookup = dog_name_to_id.get(name)
+        if dog_id_lookup:
+            bucket = get_bucket_index(dog_id_lookup)
+            dogs_dict = load_dogs_bucket(bucket)
+            if dogs_dict and dog_id_lookup in dogs_dict:
+                return dogs_dict[dog_id_lookup]
+        return None
+
     if enhanced_dog:
         print(f"✅ Found enhanced dog {dog_id}")
         print(f"📊 Enhanced Dog Information:")
@@ -790,13 +825,35 @@ def view_enhanced_dog(dog_id: str):
         print(f"  - Birth Date: {enhanced_dog.birth_date if enhanced_dog.birth_date else 'Unknown'}")
         print(f"  - Color: '{enhanced_dog.color if enhanced_dog.color else 'Unknown'}'")
         print(f"  - Weight: {enhanced_dog.weight if enhanced_dog.weight else 'Unknown'}")
-        
-        # Show pedigree information if available
-        if enhanced_dog.sire or enhanced_dog.dam:
-            print(f"  - Sire: {enhanced_dog.sire.name if enhanced_dog.sire and enhanced_dog.sire.name else (enhanced_dog.sire.id if enhanced_dog.sire else 'Unknown')}")
-            print(f"  - Dam: {enhanced_dog.dam.name if enhanced_dog.dam and enhanced_dog.dam.name else (enhanced_dog.dam.id if enhanced_dog.dam else 'Unknown')}")
-        
+
+                # Sire/Dam logic: Show as strings (raw values)
+        print(f"  - Sire: ", end="")
+        # Try .sire_name first, then .sire, then 'Unknown'
+        sire_str = None
+        if hasattr(enhanced_dog, "sire_name") and enhanced_dog.sire_name:
+            sire_str = enhanced_dog.sire_name
+        elif hasattr(enhanced_dog, "sire") and enhanced_dog.sire:
+            # If .sire is a string, show it; if it's a Dog object, show its name
+            if isinstance(enhanced_dog.sire, str):
+                sire_str = enhanced_dog.sire
+            elif hasattr(enhanced_dog.sire, "name"):
+                sire_str = enhanced_dog.sire.name
+        print(sire_str if sire_str else "Unknown")
+
+        print(f"  - Dam: ", end="")
+        dam_str = None
+        if hasattr(enhanced_dog, "dam_name") and enhanced_dog.dam_name:
+            dam_str = enhanced_dog.dam_name
+        elif hasattr(enhanced_dog, "dam") and enhanced_dog.dam:
+            if isinstance(enhanced_dog.dam, str):
+                dam_str = enhanced_dog.dam
+            elif hasattr(enhanced_dog.dam, "name"):
+                dam_str = enhanced_dog.dam.name
+        print(dam_str if dam_str else "Unknown")
+
         print(f"  - Race Participations: {len(enhanced_dog.race_participations)}")
+
+        # ...existing code for race participations and statistics...
         
         if enhanced_dog.race_participations:
             print(f"\n📋 Detailed Race Participations (showing first 5):")
@@ -1763,6 +1820,263 @@ def test_api_endpoints():
             else:
                 print(f"  No meeting IDs available for testing")
 
+def assign_parents_from_names_by_id():
+    """
+    For all dog IDs in dog_name_dict.csv, if the dog exists in a bucket,
+    set sire/dam as Dog objects if possible, otherwise as strings from the name dictionary.
+    """
+    import csv
+
+    print("🔗 ASSIGNING PARENT DOG OBJECTS OR STRINGS FROM NAMES (by dog IDs)")
+    print("=" * 60)
+
+    # Load dog name dictionary
+    dog_name_to_id = {}
+    dog_id_to_name = {}
+    dog_name_dict_path = os.path.join("../data/dogs_enhanced", "dog_name_dict.csv")
+    if os.path.exists(dog_name_dict_path):
+        with open(dog_name_dict_path, newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                name = row['dogName'].strip()
+                dog_id = str(row['dogId']).strip()
+                dog_name_to_id[name.lower()] = dog_id
+                dog_id_to_name[dog_id] = name
+
+    updated_count = 0
+    for dog_id, dog_name in dog_id_to_name.items():
+        bucket_idx = get_bucket_index(dog_id)
+        dogs_dict = load_dogs_bucket(bucket_idx)
+        if not dogs_dict or dog_id not in dogs_dict:
+            continue
+
+        dog = dogs_dict[dog_id]
+        changed = False
+
+        # Sire
+        sire_name = None
+        if isinstance(dog.sire, str):
+            sire_name = dog.sire.strip().lower()
+        elif isinstance(dog.sire, Dog) and dog.sire.name:
+            sire_name = dog.sire.name.strip().lower()
+        if sire_name and sire_name in dog_name_to_id:
+            sire_id = dog_name_to_id[sire_name]
+            sire_bucket = get_bucket_index(sire_id)
+            sire_dict = load_dogs_bucket(sire_bucket)
+            sire_obj = None
+            if sire_dict:
+                if sire_id in sire_dict:
+                    sire_obj = sire_dict[sire_id]
+                else:
+                    try:
+                        sire_id_int = int(sire_id)
+                        if sire_id_int in sire_dict:
+                            sire_obj = sire_dict[sire_id_int]
+                    except Exception:
+                        pass
+                    for k in sire_dict.keys():
+                        if str(k) == str(sire_id):
+                            sire_obj = sire_dict[k]
+                            break
+            if sire_obj:
+                dog.sire = sire_obj
+            else:
+                dog.sire = dog_id_to_name.get(sire_id, sire_name.title())
+            changed = True
+            updated_count += 1
+
+        # Dam
+        dam_name = None
+        if isinstance(dog.dam, str):
+            dam_name = dog.dam.strip().lower()
+        elif isinstance(dog.dam, Dog) and dog.dam.name:
+            dam_name = dog.dam.name.strip().lower()
+        if dam_name and dam_name in dog_name_to_id:
+            dam_id = dog_name_to_id[dam_name]
+            dam_bucket = get_bucket_index(dam_id)
+            dam_dict = load_dogs_bucket(dam_bucket)
+            dam_obj = None
+            if dam_dict:
+                if dam_id in dam_dict:
+                    dam_obj = dam_dict[dam_id]
+                else:
+                    try:
+                        dam_id_int = int(dam_id)
+                        if dam_id_int in dam_dict:
+                            dam_obj = dam_dict[dam_id_int]
+                    except Exception:
+                        pass
+                    for k in dam_dict.keys():
+                        if str(k) == str(dam_id):
+                            dam_obj = dam_dict[k]
+                            break
+            if dam_obj:
+                dog.dam = dam_obj
+            else:
+                dog.dam = dog_id_to_name.get(dam_id, dam_name.title())
+            changed = True
+            updated_count += 1
+
+        if changed:
+            save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True)
+            print(f"✅ Updated parents for dog {dog_id} in bucket {bucket_idx}")
+
+    print(f"\n🎉 Finished assigning parents. Total parent links updated: {updated_count}")
+
+def assign_parents_in_bucket(bucket_idx: int):
+    """
+    Enhance parents for all dogs in a specific bucket, with progress reporting.
+    """
+    import csv
+
+    print(f"\n🔗 ASSIGNING PARENT DOG OBJECTS OR STRINGS FROM NAMES IN BUCKET {bucket_idx}")
+    print("=" * 60)
+
+    # Load dog name dictionary
+    dog_name_to_id = {}
+    dog_id_to_name = {}
+    dog_name_dict_path = os.path.join("../data/dogs_enhanced", "dog_name_dict.csv")
+    if os.path.exists(dog_name_dict_path):
+        with open(dog_name_dict_path, newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                name = row['dogName'].strip()
+                dog_id = str(row['dogId']).strip()
+                dog_name_to_id[name.lower()] = dog_id
+                dog_id_to_name[dog_id] = name
+
+    dogs_dict = load_dogs_bucket(bucket_idx)
+    if not dogs_dict:
+        print(f"❌ Bucket {bucket_idx} not found or empty")
+        return
+
+    updated_count = 0
+    total_dogs = len(dogs_dict)
+    for i, (dog_id, dog) in enumerate(dogs_dict.items(), 1):
+        changed = False
+
+        # Sire
+        sire_name = None
+        if isinstance(dog.sire, str):
+            sire_name = dog.sire.strip().lower()
+        elif isinstance(dog.sire, Dog) and dog.sire.name:
+            sire_name = dog.sire.name.strip().lower()
+        if sire_name and sire_name in dog_name_to_id:
+            sire_id = dog_name_to_id[sire_name]
+            sire_bucket = get_bucket_index(sire_id)
+            sire_dict = load_dogs_bucket(sire_bucket)
+            sire_obj = None
+            if sire_dict:
+                if sire_id in sire_dict:
+                    sire_obj = sire_dict[sire_id]
+                else:
+                    try:
+                        sire_id_int = int(sire_id)
+                        if sire_id_int in sire_dict:
+                            sire_obj = sire_dict[sire_id_int]
+                    except Exception:
+                        pass
+                    for k in sire_dict.keys():
+                        if str(k) == str(sire_id):
+                            sire_obj = sire_dict[k]
+                            break
+            if sire_obj:
+                dog.sire = sire_obj
+            else:
+                dog.sire = dog_id_to_name.get(sire_id, sire_name.title())
+            changed = True
+            updated_count += 1
+
+        # Dam
+        dam_name = None
+        if isinstance(dog.dam, str):
+            dam_name = dog.dam.strip().lower()
+        elif isinstance(dog.dam, Dog) and dog.dam.name:
+            dam_name = dog.dam.name.strip().lower()
+        if dam_name and dam_name in dog_name_to_id:
+            dam_id = dog_name_to_id[dam_name]
+            dam_bucket = get_bucket_index(dam_id)
+            dam_dict = load_dogs_bucket(dam_bucket)
+            dam_obj = None
+            if dam_dict:
+                if dam_id in dam_dict:
+                    dam_obj = dam_dict[dam_id]
+                else:
+                    try:
+                        dam_id_int = int(dam_id)
+                        if dam_id_int in dam_dict:
+                            dam_obj = dam_dict[dam_id_int]
+                    except Exception:
+                        pass
+                    for k in dam_dict.keys():
+                        if str(k) == str(dam_id):
+                            dam_obj = dam_dict[k]
+                            break
+            if dam_obj:
+                dog.dam = dam_obj
+            else:
+                dog.dam = dog_id_to_name.get(dam_id, dam_name.title())
+            changed = True
+            updated_count += 1
+
+        # Progress feedback every 50 dogs
+        if i % 50 == 0 or i == total_dogs:
+            print(f"  Progress: {i}/{total_dogs} dogs processed, {updated_count} parents updated so far")
+
+    if updated_count > 0:
+        save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True)
+        print(f"✅ Updated parents for {updated_count} dogs in bucket {bucket_idx}")
+    else:
+        print(f"⏭️ No parent updates needed in bucket {bucket_idx}")
+
+def assign_parents_from_meeting_api_in_bucket(bucket_idx: int):
+    """
+    For all dogs in a bucket, if sire/dam is missing or empty, fetch from meeting API and set as string.
+    """
+    print(f"\n🔗 ASSIGNING PARENT NAMES FROM MEETING API IN BUCKET {bucket_idx}")
+    print("=" * 60)
+
+    dogs_dict = load_dogs_bucket(bucket_idx)
+    if not dogs_dict:
+        print(f"❌ Bucket {bucket_idx} not found or empty")
+        return
+
+    updated_count = 0
+    total_dogs = len(dogs_dict)
+    for i, (dog_id, dog) in enumerate(dogs_dict.items(), 1):
+        changed = False
+
+        # Only update if sire or dam is missing or empty
+        needs_sire = not dog.sire or (isinstance(dog.sire, str) and dog.sire.strip() == '')
+        needs_dam = not dog.dam or (isinstance(dog.dam, str) and dog.dam.strip() == '')
+
+        if needs_sire or needs_dam:
+            meeting_ids = get_meeting_ids_for_dog(dog)
+            if meeting_ids:
+                meeting_data = fetch_meeting_data_cached(meeting_ids[0])
+                if meeting_data:
+                    dog_info = extract_dog_info_from_meeting(meeting_data, int(dog_id))
+                    if dog_info:
+                        if needs_sire and dog_info.get('sire'):
+                            dog.sire = dog_info['sire']
+                            changed = True
+                        if needs_dam and dog_info.get('dam'):
+                            dog.dam = dog_info['dam']
+                            changed = True
+
+        if changed:
+            updated_count += 1
+
+        # Progress feedback every 50 dogs
+        if i % 50 == 0 or i == total_dogs:
+            print(f"  Progress: {i}/{total_dogs} dogs processed, {updated_count} parents updated so far")
+
+    if updated_count > 0:
+        save_dogs_bucket(bucket_idx, dogs_dict, enhanced=True)
+        print(f"✅ Updated parents for {updated_count} dogs in bucket {bucket_idx}")
+    else:
+        print(f"⏭️ No parent updates needed in bucket {bucket_idx}")
+
 # Update the main menu to include the new options
 if __name__ == "__main__":
     print("🐕 Dog Enhancement Tool")
@@ -1831,10 +2145,13 @@ if __name__ == "__main__":
     print("14. Analyze unconverted SP formats")
     print("15. Debug enhancement failures")  # New option
     print("16. Test API endpoints")  # New option
+    print("17. Assign parent Dog objects from names (post-enhancement)")
+    print("18. Assign parent Dog objects from names in a chosen bucket (progress shown)")
+    print("19. Assign parent names from meeting API in a chosen bucket (progress shown)")
+    print("20. Assign parent names from meeting API in ALL buckets (progress shown)")
     print()
-    
-    choice = input("Enter choice (1-16): ").strip()
-    
+    choice = input("Enter choice (1-20): ").strip()
+
     if choice == '1':
         get_enhancement_stats()
     elif choice == '2':
@@ -1878,5 +2195,23 @@ if __name__ == "__main__":
         debug_enhancement_failures()
     elif choice == '16':
         test_api_endpoints()
+    elif choice == '17':
+        assign_parents_from_names_by_id()    
+    elif choice == '18':
+        bucket_idx = input("Enter bucket index to assign parents (0-99): ").strip()
+        if bucket_idx.isdigit():
+            assign_parents_in_bucket(int(bucket_idx))
+        else:
+            print("Invalid bucket index")
+    elif choice == '19':
+        bucket_idx = input("Enter bucket index to assign parents from meeting API (0-99): ").strip()
+        if bucket_idx.isdigit():
+            assign_parents_from_meeting_api_in_bucket(int(bucket_idx))
+        else:
+            print("Invalid bucket index")
+    elif choice == '20':
+        print("Assign parent names from meeting API in ALL buckets (progress shown)")
+        for bucket_idx in range(NUM_BUCKETS):
+            assign_parents_from_meeting_api_in_bucket(bucket_idx)
     else:
         print("Invalid choice")
