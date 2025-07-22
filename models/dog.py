@@ -35,13 +35,18 @@ class Dog:
     def get_participations_before(self, dt: datetime) -> List[RaceParticipation]:
         return [rp for rp in self.race_participations if rp.race_datetime < dt]
 
-    def get_participation_by_race_id(self, race_id: str) -> List[RaceParticipation]:
+    def get_participation_by_race_id(self, race_id: str) -> RaceParticipation:
         """Get all participations for a specific race ID (returns list for consistency)"""
-        participations = []
         for rp in self.race_participations:
             if rp.race_id == race_id:
-                participations.append(rp)
-        return participations
+                return rp
+
+    def get_participation_by_race(self, race_id: str, meeting_id: str) -> Optional["RaceParticipation"]:
+        for rp in self.race_participations:
+            if rp.race_id == race_id and rp.meeting_id == meeting_id:
+                return rp
+        return None
+
 
     def set_name(self, name: str):
         self.name = name
