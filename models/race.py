@@ -144,6 +144,11 @@ class Race:
     def save(self, path: str):
         with open(path, "wb") as f:
             pickle.dump(self, f)
+            
+    def set_weather(self, rainfall_7d, temperature, humidity):
+        self.rainfall_7d = rainfall_7d
+        self.temperature = temperature
+        self.humidity = humidity
 
     @staticmethod
     def load(path: str) -> "Race":
