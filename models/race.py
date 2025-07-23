@@ -108,9 +108,14 @@ class Race:
         commentary_tags = {}
         for trap, p in trap_map.items():
             if p.comment:
-                # Parse comment into tags (split by comma and clean)
-                tags = [tag.strip() for tag in p.comment.split(',') if tag.strip()]
-                commentary_tags[trap] = tags
+                # Convert comment to string if it's not already
+                comment_str = str(p.comment) if p.comment is not None else ""
+                if comment_str and comment_str.lower() not in ['nan', 'none', '']:
+                    # Parse comment into tags (split by comma and clean)
+                    tags = [tag.strip() for tag in comment_str.split(',') if tag.strip()]
+                    commentary_tags[trap] = tags
+                else:
+                    commentary_tags[trap] = []
             else:
                 commentary_tags[trap] = []
         

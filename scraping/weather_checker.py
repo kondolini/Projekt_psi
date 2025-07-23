@@ -139,16 +139,3 @@ if __name__ == "__main__":
         print(f"Humidity at {args.time}: {result['humidity']}%")
         print(f"Temperature at {args.time}: {result['temperature']}°C")
         print("-" * 40)
-    parser.add_argument("place", help="Location name (e.g., 'Brisbane')")
-
-    args = parser.parse_args()
-    result = get_weather_cached(args.date, args.time, args.place)
-
-    if result:
-        print("\nWeather Data:")
-        print("-" * 40)
-        print(f"Rainfall (last 7 days including {args.date}): {result['rainfall_7d']} mm")
-        print(f"Humidity at {args.time}: {result['humidity']}%")
-        print(f"Temperature at {args.time}: {result['temperature']}°C")
-        print("-" * 40)
-        print("-" * 40)

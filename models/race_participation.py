@@ -53,8 +53,14 @@ class RaceParticipation:
         """Parse comment field into structured tags"""
         if not self.comment:
             return []
+        
+        # Convert comment to string if it's not already
+        comment_str = str(self.comment) if self.comment is not None else ""
+        if not comment_str or comment_str.lower() in ['nan', 'none', '']:
+            return []
+            
         # Simple parsing - split by comma and clean
-        tags = [tag.strip() for tag in self.comment.split(',') if tag.strip()]
+        tags = [tag.strip() for tag in comment_str.split(',') if tag.strip()]
         return tags
 
     def __lt__(self, other):
