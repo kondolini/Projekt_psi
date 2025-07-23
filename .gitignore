@@ -1,0 +1,17 @@
+# Ignore compiled Python files
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore specific data files, not all .pkl files
+data/scraped/*.csv
+
+# Allow .pkl files by default, then selectively ignore folders if needed
+# If you later want to exclude individual files again, do so explicitly
+
+# Ignore IDE and editor files
+.vscode/
+*.vscode/
+.idea/
+*.idea/
+__pycache__/

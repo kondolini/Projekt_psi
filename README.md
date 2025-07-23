@@ -6,58 +6,121 @@ To ensure realistic forecasting, we model races **chronologically**, maintaining
 
 ---
 
+Here is the **modified section of the README**, incorporating the newly implemented `Track` class and the new grouped-saving framework for `Dog` and `RaceParticipation` objects:
+
+---
+
 ## 🧱 Core Data Classes
 
-### 🏁 `Race` class
+### ✅ 🐕 `Dog` class
 
-Encapsulates a single race event.
+Defines a greyhound and optionally maintains dynamic race data.
 
-**Fields:**
+**✅ Implemented Fields:**
 
-* `race_date`, `race_time` — when the race occurred.
-* `race_class`, `distance`, `category`, `prizes`.
-* **Weather conditions**:
+* `id` (formerly `dog_id`) — unique dog identifier
+* `participations` — list of `RaceParticipation` objects
+* Supports `add_participations()` to bulk-add races
+* Can be serialized/deserialized via `pickle`
+* Construction pipeline available in `build_and_save_dogs.py`
+* **🔄 Dogs are now saved in grouped `.pkl` files based on ID hash buckets** (e.g. 400–499, 500–599)
 
-  * `rainfall_7d`: `[float; 7]` — rainfall (mm) per day before the race.
-  * `humidity`: Float
-  * `temperature`: Float (°C)
-* **Dog race-level data**:
+**🔜 Planned:**
 
-  * `odds_vec`: `[float; num_dogs * 2]` — win and place odds before the race for each dog.
-  * `race_time_vec`: `[float; num_traps]` — actual finish time per trap.
-  * `commentary_tags_vec`: `[list[str]; num_dogs]` — standardized tags describing behavior (e.g., `SAw`, `Ld1/2`, `EvCh`).
-
-**References:**
-
-* List of participating `Dog` objects (including `trap_number`, `dog_id`, etc.)
-* Associated `Track` object
+* Static fields: `name`, `birth_date`, `color`, `weight`, `trainer`
+* Lineage: references to `sire`, `dam` (`Dog` instances or IDs)
+* `memory_vector`: a learnable embedding to capture dynamic race form
 
 ---
 
-### 🐕 `Dog` class
+### ✅ 🎟️ `RaceParticipation` class
 
-Defines a greyhound and optionally maintains a dynamic memory.
+Represents a **dog’s entry in a single race**.
 
-**Static fields:**
+**✅ Implemented Fields:**
 
-* `dog_id`, `name`, `birth_date`, `color`, `weight`, `trainer`
-* Lineage: references to `sire` and `dam` (each another `Dog` object)
+* `race_id`, `trap_number`, `finish_time`, `position`, `odds`, etc.
+* Structured `commentary_tags` as list of strings
+* Built from raw scraped CSV rows via `parse_race_participation()`
+* **Serialized using bucketed `.pkl` files based on race ID mod hash**
 
-**Dynamic fields:**
+**✅ Status:**
 
-* `memory_vector`: a learned embedding of performance form (updated chronologically)
-* No recursive storage of race history — it’s modeled via `memory_vector` during training.
+* Used in `Dog`'s `participations`
+* Core parsing logic complete
 
 ---
 
-### 🏟 `Track` class
+### ✅ 🏟 `Track` class
 
-Represents track properties and identity.
+Defines the track a race was held on.
 
-* `name`, `location`, `surface_type`, `geometry`
-* May include drainage features, sand type, or baseline condition indicators
+**✅ Implemented Fields:**
 
-Each race references a track to inform how local conditions (combined with weather) may impact performance.
+* `name`: string name of the track
+* `race_ids`: list of race IDs run at this track
+* `average_times`: dict mapping distances (in meters) to average finish times
+* `race_count`: total number of races seen
+* **Built dynamically from race participations** using `Track.from_race_participations()`
+* **Serialized to individual files per track name**
+
+**🔜 Planned Extensions:**
+
+* `location`, `surface_type`, `geometry`
+* Track bias features: drainage, sand composition
+
+Tracks are cached and saved during test parsing or batch preprocessing.
+
+---
+
+### ✅ 🏁 `Race` class
+
+Encapsulates a **full race event**, combining structured data from each dog's participation, market odds, environmental context, and derived probabilistic features.
+
+**✅ Implemented Fields:**
+
+* **Static Info:**
+
+  * `race_id`, `meeting_id`, `race_date`, `race_time`
+  * `distance`, `race_class`, `category`, `track_name`
+* **Participants:**
+
+  * `dog_ids`: `Dict[int, str]` mapping trap number to dog ID
+* **Market Features:**
+
+  * `odds`: raw starting price odds (decimal) per trap
+  * `implied_probs`: 1/odds (uncorrected market probabilities)
+  * `devig_odds`: corrected odds via **Power Method** (to remove vig/overround)
+  * `fair_probs`: corrected probabilities (summing to 1)
+* **Performance Features:**
+
+  * `race_times`: actual finish time per trap
+  * `commentary_tags`: structured behavioral annotations per dog (list of tags)
+* **Environmental Features:**
+
+  * `rainfall_7d`: `[float; 7]` list of daily rain data
+  * `temperature`, `humidity`: scalar weather conditions
+
+**✅ Status:**
+
+* Constructed from `RaceParticipation` objects via `Race.from_participations()` or `Race.from_dogs()`.
+* All vector fields are structured as `Dict[int, value]`, keyed by trap number.
+* Includes built-in **vig correction** using the Power Method with numerical root-finding.
+* Supports `save()` and `load()` with pickle.
+* Connects to `Dog` and `Track` via lookup dictionaries.
+* Printable summary with `print_info()`.
+
+**🔜 To Implement:**
+
+* `to_dataframe()` → converts a race to one row per dog, suitable for model input.
+* Race-level metadata: `prizes`, `winning_margin`, `track_condition`, etc.
+* Derived target distributions for win/place forecasting.
+* Integration of per-dog `memory_vector` and trainer-level statistics.
+
+**📌 Notes:**
+
+* Implements **de-vigification** using the **Power Method**, a calibrated, bias-aware transformation of odds into fair probability distributions.
+* Outputs both raw market odds and calibrated fair odds, enabling uncertainty modeling and realistic pricing.
 
 ---
 
