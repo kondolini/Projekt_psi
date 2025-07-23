@@ -296,6 +296,8 @@ def train_model(
         tqdm.write(f"   📈 Train ROI: {train_metrics['roi']:.4f}, Val ROI: {val_metrics['roi']:.4f}")
         tqdm.write(f"   🎯 Train Hit Rate: {train_metrics['hit_rate']:.4f}, Val Hit Rate: {val_metrics['hit_rate']:.4f}")
         tqdm.write(f"   🎰 Train Bets: {train_metrics.get('num_bets', 0)}, Val Bets: {val_metrics.get('num_bets', 0)}")
+        tqdm.write(f"   🏁 Valid Races: Train {train_metrics.get('num_valid_races', 0)}, Val {val_metrics.get('num_valid_races', 0)}")
+        tqdm.write(f"   💸 Bet %: {train_metrics.get('bet_percentage', 0.02)*100:.1f}%")
         
         # Save model after every epoch
         epoch_metrics = {
