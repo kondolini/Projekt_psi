@@ -203,13 +203,23 @@ class RaceDataProcessor:
                 dog_features.append(self._get_empty_dog_features(max_history))
                 target_labels.append(0)
         
+        # Extract market odds for each trap (0 if no odds - test race)
+        market_odds = []
+        for trap in range(1, 7):
+            if race.odds and trap in race.odds and race.odds[trap] is not None:
+                market_odds.append(float(race.odds[trap]))
+            else:
+                market_odds.append(0.0)  # No odds available (test race)
+        
         return {
             "race_features": race_features,
             "dog_features": dog_features,  # List of 6 dog feature dicts
             "targets": target_labels,      # List of 6 binary labels
+            "market_odds": market_odds,    # List of 6 market odds (0 for test races)
             "race_id": race.race_id,
             "meeting_id": race.meeting_id,
-            "race_datetime": race.get_race_datetime()
+            "race_datetime": race.get_race_datetime(),
+            "is_test_race": race.is_test_race()  # Flag for races without odds
         }
     
     def _extract_race_features(self, race: Race) -> Dict:

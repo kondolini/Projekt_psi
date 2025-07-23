@@ -356,14 +356,15 @@ class GreyhoundRacingModel(nn.Module):
 class BettingLoss(nn.Module):
     """
     Custom loss function that optimizes for betting profitability
-    Implements the strategy: bet on dog with highest expected profit
+    Uses fixed percentage betting on highest expected value dog
     """
     
-    def __init__(self, alpha: float = 1.1, commission: float = 0.05, starting_balance: float = 1000.0):
+    def __init__(self, alpha: float = 1.1, commission: float = 0.05, starting_balance: float = 1000.0, bet_percentage: float = 0.02):
         super().__init__()
-        self.alpha = alpha      # Odds reduction factor (market movement)
+        self.alpha = alpha      # Odds reduction factor (market movement) - optimistic early training
         self.commission = commission  # Exchange commission
         self.starting_balance = starting_balance
+        self.bet_percentage = bet_percentage  # Fixed percentage of bankroll to bet (2%)
         self.balance = starting_balance  # Track running balance
         self.total_races = 0
         self.total_profit = 0.0
@@ -375,22 +376,31 @@ class BettingLoss(nn.Module):
         market_odds: torch.Tensor       # [batch_size, 6] market odds
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Calculate betting loss using your specified strategy
+        Calculate betting loss using fixed percentage strategy
         
-        Strategy: Bet on dog with highest expected profit: (odds * alpha * p_i - 1) * kelly_bet * (1 - commission)
+        Strategy: Bet fixed percentage on dog with highest expected profit
         """
         batch_size, num_traps = predicted_probs.shape
         
-        # Calculate expected profits for each dog
-        kelly_bets = self._calculate_kelly_bets(predicted_probs, market_odds)
-        expected_profits_per_dog = (market_odds * self.alpha * predicted_probs - 1) * kelly_bets * (1 - self.commission)
+        # Check for races without odds (test races) - skip them
+        has_valid_odds = torch.any(market_odds > 0, dim=1)  # [batch_size]
+        
+        # Calculate expected profits for each dog (only for races with odds)
+        expected_profits_per_dog = torch.zeros_like(predicted_probs)
+        
+        # Only calculate for races with valid odds
+        valid_mask = has_valid_odds.unsqueeze(1).expand_as(predicted_probs)
+        expected_profits_per_dog[valid_mask] = (
+            (market_odds[valid_mask] * self.alpha * predicted_probs[valid_mask] - 1) * 
+            self.bet_percentage * (1 - self.commission)
+        )
         
         # For each race, bet only on the dog with highest expected profit
         best_dog_indices = torch.argmax(expected_profits_per_dog, dim=1)  # [batch_size]
         best_expected_profits = torch.gather(expected_profits_per_dog, 1, best_dog_indices.unsqueeze(1)).squeeze(1)
         
-        # Only bet if expected profit is positive
-        should_bet = best_expected_profits > 0
+        # Only bet if expected profit is positive AND race has valid odds
+        should_bet = (best_expected_profits > 0) & has_valid_odds
         
         # Calculate actual outcomes
         actual_profits = torch.zeros_like(best_expected_profits)
@@ -399,25 +409,27 @@ class BettingLoss(nn.Module):
         for i in range(batch_size):
             if should_bet[i]:
                 dog_idx = best_dog_indices[i]
-                kelly_bet = kelly_bets[i, dog_idx]
-                bet_amounts[i] = kelly_bet
+                bet_amount = self.bet_percentage  # Fixed percentage
+                bet_amounts[i] = bet_amount
                 
                 # Check if this dog won
                 if true_winners[i, dog_idx] > 0.5:  # Winner
-                    payout = market_odds[i, dog_idx] * self.alpha * kelly_bet
-                    actual_profits[i] = (payout - kelly_bet) * (1 - self.commission)
+                    payout = market_odds[i, dog_idx] * self.alpha * bet_amount
+                    actual_profits[i] = (payout - bet_amount) * (1 - self.commission)
                 else:  # Loser
-                    actual_profits[i] = -kelly_bet * (1 - self.commission)
+                    actual_profits[i] = -bet_amount * (1 - self.commission)
         
-        # Update balance tracking
+        # Update balance tracking (only for races with valid odds)
+        valid_races_count = has_valid_odds.sum().item()
         batch_profit = actual_profits.sum().item()
         self.total_profit += batch_profit
-        self.total_races += batch_size
+        self.total_races += valid_races_count  # Only count races with odds
         
-        # Calculate PPB (Profit Per Bet)
+        # Calculate PPB (Profit Per Bet) - only for races with odds
         ppb = self.total_profit / max(self.total_races, 1)
         
         # Loss = negative expected profit (we want to maximize profit)
+        # Only consider races with valid odds for loss calculation
         if should_bet.any():
             total_expected_profit = best_expected_profits[should_bet].sum()
         else:
@@ -442,6 +454,9 @@ class BettingLoss(nn.Module):
             # Calculate expected profit for metrics (only from actual bets)
             expected_profit_for_metrics = best_expected_profits[should_bet].sum().item() / batch_size if should_bet.any() else 0.0
             
+            # Additional metrics for tracking
+            num_valid_odds_races = has_valid_odds.sum().item()
+            
             metrics = {
                 "expected_profit": expected_profit_for_metrics,
                 "actual_profit": batch_profit / batch_size,
@@ -449,8 +464,10 @@ class BettingLoss(nn.Module):
                 "roi": roi,
                 "hit_rate": hit_rate,
                 "num_bets": num_bets,
+                "num_valid_races": num_valid_odds_races,  # Track races with odds vs test races
                 "total_balance": self.starting_balance + self.total_profit,
-                "avg_bet_size": total_bet_amount / max(num_bets, 1)
+                "avg_bet_size": total_bet_amount / max(num_bets, 1),
+                "bet_percentage": self.bet_percentage
             }
         
         return loss, metrics
@@ -461,42 +478,6 @@ class BettingLoss(nn.Module):
         self.total_races = 0
         self.total_profit = 0.0
     
-    def _calculate_kelly_bets(self, predicted_probs: torch.Tensor, market_odds: torch.Tensor) -> torch.Tensor:
-        """
-        Calculate Kelly criterion bet sizes (as fraction of bankroll)
-        
-        Kelly formula: f = (bp - q) / b
-        where:
-        - b = net_odds = odds - 1
-        - p = predicted probability 
-        - q = 1 - p
-        - f = fraction to bet
-        """
-        # Use actual market odds (not adjusted yet)
-        adjusted_odds = market_odds * self.alpha
-        net_odds = adjusted_odds - 1  # b = net odds
-        
-        # Clamp odds to reasonable range to prevent numerical issues
-        net_odds = torch.clamp(net_odds, min=0.01, max=49.0)
-        
-        q = 1 - predicted_probs  # q = probability of losing
-        
-        # Kelly fraction: (b*p - q) / b = p - q/b
-        kelly_fractions = predicted_probs - q / net_odds
-        
-        # Only bet when Kelly is positive
-        kelly_fractions = torch.clamp(kelly_fractions, min=0.0, max=0.15)  # Cap at 15% of bankroll
-        
-        # Zero out bets on very short odds (< 1.05) or very long odds (> 50)
-        valid_odds_mask = (adjusted_odds >= 1.05) & (adjusted_odds <= 50.0)
-        kelly_fractions = kelly_fractions * valid_odds_mask.float()
-        
-        # Zero out bets when predicted probability is too low (< 5%)
-        prob_mask = predicted_probs >= 0.05
-        kelly_fractions = kelly_fractions * prob_mask.float()
-        
-        return kelly_fractions
-
 
 def collate_race_batch(batch_list: List[Dict]) -> Dict[str, torch.Tensor]:
     """
@@ -505,14 +486,14 @@ def collate_race_batch(batch_list: List[Dict]) -> Dict[str, torch.Tensor]:
     batch_size = len(batch_list)
     
     # Initialize tensors
-    race_features = torch.zeros(batch_size, 8)  # 5 dense + 3 categorical indices
-    dog_features = torch.zeros(batch_size, 6, 3)  # 6 traps, 3 features each
-    history_features = torch.zeros(batch_size, 6, 10, 9)  # 6 traps, 10 races, 9 features
+    race_features = torch.zeros(batch_size, 8)  # 5 numeric + 3 categorical indices
+    dog_features = torch.zeros(batch_size, 6, 3)  # 6 traps, 3 static features each
+    history_features = torch.zeros(batch_size, 6, 10, 9)  # 6 traps, 10 races, 9 features (4 + 5 commentary)
     targets = torch.zeros(batch_size, 6)
+    market_odds = torch.zeros(batch_size, 6)  # Market odds for each trap
     
-    # Fill tensors
     for i, sample in enumerate(batch_list):
-        # Race features
+        # Race features: 5 numerical + 3 categorical
         rf = sample["race_features"]
         race_features[i] = torch.tensor([
             rf["day_of_week"], rf["month"], rf["hour"], rf["minute"], rf["distance_norm"],
@@ -552,10 +533,14 @@ def collate_race_batch(batch_list: List[Dict]) -> Dict[str, torch.Tensor]:
         
         # Targets
         targets[i] = torch.tensor(sample["targets"])
+        
+        # Market odds (0 for test races)
+        market_odds[i] = torch.tensor(sample["market_odds"])
     
     return {
         "race_features": race_features,
         "dog_features": dog_features,
         "history_features": history_features,
-        "targets": targets
+        "targets": targets,
+        "market_odds": market_odds
     }

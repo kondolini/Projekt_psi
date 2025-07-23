@@ -481,8 +481,8 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
-    # Create loss function
-    criterion = BettingLoss(alpha=0.95, commission=0.05)
+    # Create loss function with optimistic alpha and fixed percentage betting
+    criterion = BettingLoss(alpha=1.1, commission=0.05, bet_percentage=0.02)
     
     # Handle resume training
     start_epoch = 0

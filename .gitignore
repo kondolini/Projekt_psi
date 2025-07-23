@@ -3,12 +3,6 @@
 *.pyo
 *.pyd
 
-# Ignore specific data files, not all .pkl files
-data/scraped/*.csv
-
-# Ignore machine learning cache files (too large for GitHub)
-machine_learning/outputs/*.pkl
-machine_learning/outputs/*.pth
 
 # Allow .pkl files by default, then selectively ignore folders if needed
 # If you later want to exclude individual files again, do so explicitly
