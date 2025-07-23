@@ -3,6 +3,10 @@
 *.pyo
 *.pyd
 
+# Ignore specific data files, not all .pkl files
+data/scraped/*.csv
+
+
 
 # Allow .pkl files by default, then selectively ignore folders if needed
 # If you later want to exclude individual files again, do so explicitly
