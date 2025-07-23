@@ -1,141 +1,132 @@
-import argparse
+
+
+
+# --- Meteostat Implementation ---
 from datetime import datetime, timedelta
-import requests
+from meteostat import Point, Hourly, Daily
 from geopy.geocoders import Nominatim
 import time
-import threading
 
-# Enhanced rate limiting - reduced for speed
-_last_request_time = 0
-_request_lock = threading.Lock()
-MIN_REQUEST_INTERVAL = 0.5  # Reduced to 0.5 seconds (2 req/sec)
-_request_count = 0
-_start_time = time.time()
+_geocode_cache = {}
+
+# --- Open-Meteo ERA5 Archive API Implementation ---
+import os
+import requests
+from datetime import datetime, timedelta
+from geopy.geocoders import Nominatim
+import time
+
+def geocode_place(place):
+    geolocator = Nominatim(user_agent="openmeteo_weather_checker", timeout=10)
+    for attempt in range(2):
+        try:
+            location = geolocator.geocode(place)
+            if location:
+                return location.latitude, location.longitude
+            time.sleep(1)
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(2)
+    return None, None
 
 def get_weather(date: str, time_str: str, place: str):
     """
-    Fetches weather data with optimized rate limiting
+    Fetch historical weather for a given date, time, and place using Open-Meteo ERA5 API.
+    Returns dict with rainfall_7d, temperature, humidity or None if not found.
     """
-    global _last_request_time, _request_count, _start_time
-    
-    # Optimized rate limiting
-    with _request_lock:
-        now = time.time()
-        time_since_last = now - _last_request_time
-        
-        if time_since_last < MIN_REQUEST_INTERVAL:
-            wait_time = MIN_REQUEST_INTERVAL - time_since_last
-            time.sleep(wait_time)
-        
-        _last_request_time = time.time()
-        _request_count += 1
-        
-        # Log progress every 20 requests
-        if _request_count % 20 == 0:
-            elapsed = time.time() - _start_time
-            rate = _request_count / elapsed * 60  # requests per minute
-            print(f"Weather API: {_request_count} requests, {rate:.1f} req/min")
-    
     try:
-        # Step 1: Geocode with longer timeout and retry
-        geolocator = Nominatim(user_agent="weather_checker_v2", timeout=15)
-        
-        # Try geocoding with retry
-        location = None
-        for attempt in range(2):
-            try:
-                location = geolocator.geocode(place)
-                if location:
-                    break
-                time.sleep(1)  # Brief pause between attempts
-            except Exception as e:
-                if attempt == 0:
-                    print(f"Geocoding attempt 1 failed for {place}: {e}")
-                    time.sleep(2)
-                else:
-                    print(f"Geocoding failed for {place}: {e}")
-                    return None
-        
-        if not location:
-            print(f"Could not geocode location: {place}")
+        # Geocode place to lat/lon
+        lat, lon = geocode_place(place)
+        if lat is None or lon is None:
+            print(f"Could not geocode place: {place}")
             return None
 
-        latitude = location.latitude
-        longitude = location.longitude
-
-        # Step 2: Date range for rainfall history
-        end_date = datetime.fromisoformat(date)
+        # Get 7 days ending at date
+        end_date = datetime.strptime(date, "%Y-%m-%d")
         start_date = end_date - timedelta(days=6)
-
-        # Format dates
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
 
-        # Step 3: Request weather data with timeout
-        api_url = "https://api.open-meteo.com/v1/forecast"
+        url = f"https://archive-api.open-meteo.com/v1/era5"
         params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "timezone": "auto",
-            "daily": "precipitation_sum",
-            "hourly": "temperature_2m,relativehumidity_2m",
+            "latitude": lat,
+            "longitude": lon,
             "start_date": start_str,
-            "end_date": end_str
+            "end_date": end_str,
+            "hourly": "temperature_2m,relativehumidity_2m,precipitation",
+            "timezone": "Europe/London"
         }
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
 
-        response = requests.get(api_url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        # Rainfall 7d: sum precipitation for each day
+        rainfall_7d = []
+        times = data.get("hourly", {}).get("time", [])
+        precip = data.get("hourly", {}).get("precipitation", [])
+        temp = data.get("hourly", {}).get("temperature_2m", [])
+        humidity = data.get("hourly", {}).get("relativehumidity_2m", [])
 
-        # Step 4: Extract rainfall
-        rainfall_7d = data.get("daily", {}).get("precipitation_sum", [])
-        if len(rainfall_7d) != 7:
-            print("Warning: Rainfall data missing or incomplete.")
+        # Group precipitation by day
+        day_precip = {}
+        for t, p in zip(times, precip):
+            d = t.split('T')[0]
+            day_precip.setdefault(d, 0.0)
+            if p is not None:
+                day_precip[d] += p
+        for i in range(7):
+            d = (start_date + timedelta(days=i)).strftime('%Y-%m-%d')
+            rainfall_7d.append(round(day_precip.get(d, 0.0), 2))
 
-        # Step 5: Extract hourly humidity and temperature for target time
-        hourly = data.get("hourly", {})
-        timestamps = hourly.get("time", [])
-        target_timestamp = f"{date}T{time_str}"
+        # Round input time to the nearest hour
+        input_dt = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M")
+        # If minutes >= 30, round up, else round down
+        if input_dt.minute >= 30:
+            input_dt = input_dt.replace(minute=0) + timedelta(hours=1)
+        else:
+            input_dt = input_dt.replace(minute=0)
 
-        try:
-            index = timestamps.index(target_timestamp)
-            temperature = hourly.get("temperature_2m", [])[index]
-            humidity = hourly.get("relativehumidity_2m", [])[index]
-        except (ValueError, IndexError):
-            print(f"Error: No data available for {target_timestamp}. Using defaults.")
-            temperature = 15.0
-            humidity = 50.0
-
-        # Step 6: Return results
+        # Find the hour closest to the requested (rounded) time on the requested date
+        target_dt = input_dt
+        best_idx = None
+        min_diff = None
+        for idx, t in enumerate(times):
+            dt = datetime.strptime(t, "%Y-%m-%dT%H:%M")
+            if dt.date() == target_dt.date():
+                diff = abs((dt - target_dt).total_seconds())
+                if min_diff is None or diff < min_diff:
+                    min_diff = diff
+                    best_idx = idx
+        if best_idx is not None:
+            temperature = temp[best_idx]
+            hum = humidity[best_idx]
+        else:
+            temperature = None
+            hum = None
         return {
             "rainfall_7d": rainfall_7d,
-            "humidity": humidity,
-            "temperature": temperature
+            "temperature": temperature,
+            "humidity": hum
         }
-
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            print(f"Rate limited - backing off for {place}")
-            time.sleep(10)  # Longer backoff for rate limits
-        return None
     except Exception as e:
-        print(f"Weather API error for {place} on {date}: {str(e)[:100]}")
+        print(f"Weather API error: {e}")
         return None
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch weather data for a date, time, and place.")
-    parser.add_argument("date", help="Date in YYYY-MM-DD format")
-    parser.add_argument("time", help="Time in HH:MM format (e.g. 14:00)")
-    parser.add_argument("place", help="Location name (e.g., 'Brisbane')")
-
-    args = parser.parse_args()
-    result = get_weather(args.date, args.time, args.place)
-
-    if result:
-        print("\nWeather Data:")
-        print("-" * 40)
-        print(f"Rainfall (last 7 days including {args.date}): {result['rainfall_7d']} mm")
-        print(f"Humidity at {args.time}: {result['humidity']}%")
-        print(f"Temperature at {args.time}: {result['temperature']}°C")
-        print("-" * 40)
+        choice = input("Select an option: ").strip()
+        if choice == "1":
+            date = input("Enter date (YYYY-MM-DD): ").strip()
+            time_str = input("Enter time (HH:MM, 24h): ").strip()
+            place = input("Enter place (track/location name): ").strip()
+            result = get_weather(date, time_str, place)
+            if result:
+                print("\nWeather Data:")
+                print("-" * 40)
+                print(f"Rainfall (last 7 days including {date}): {result['rainfall_7d']} mm")
+                print(f"Temperature at {time_str}: {result['temperature']}°C")
+                print(f"Humidity at {time_str}: {result['humidity']}%")
+                print("-" * 40)
+            else:
+                print("No weather data found for the given input.")
+        elif choice == "0":
+            print("Exiting.")
+        else:
+            print("Invalid option.")
