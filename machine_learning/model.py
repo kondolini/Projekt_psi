@@ -359,7 +359,7 @@ class BettingLoss(nn.Module):
     Implements the strategy: bet on dog with highest expected profit
     """
     
-    def __init__(self, alpha: float = 0.95, commission: float = 0.05, starting_balance: float = 1000.0):
+    def __init__(self, alpha: float = 1.1, commission: float = 0.05, starting_balance: float = 1000.0):
         super().__init__()
         self.alpha = alpha      # Odds reduction factor (market movement)
         self.commission = commission  # Exchange commission
