@@ -219,7 +219,8 @@ class RaceDataProcessor:
             "race_id": race.race_id,
             "meeting_id": race.meeting_id,
             "race_datetime": race.get_race_datetime(),
-            "is_test_race": race.is_test_race()  # Flag for races without odds
+            "is_test_race": race.is_test_race(),  # Flag for races without odds
+            "has_complete_field": race.has_complete_field()  # Flag for races with complete participant data
         }
     
     def _extract_race_features(self, race: Race) -> Dict:

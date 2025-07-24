@@ -10,7 +10,7 @@ import pickle
 import os
 import sys
 from datetime import datetime, date
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import argparse
 from collections import defaultdict
 from tqdm import tqdm
@@ -146,7 +146,8 @@ def train_model(
     model: GreyhoundRacingModel,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    criterion: BettingLoss,
+    train_criterion: BettingLoss,
+    val_criterion: BettingLoss,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
     num_epochs: int,
@@ -167,7 +168,8 @@ def train_model(
     # Main training loop with progress bar
     for epoch in tqdm(range(start_epoch, num_epochs), desc="Training Progress", initial=start_epoch, total=num_epochs):
         # Reset balance tracking for this epoch
-        criterion.reset_balance()
+        train_criterion.reset_balance()
+        val_criterion.reset_balance()
         
         # Training phase
         model.train()
@@ -188,31 +190,12 @@ def train_model(
             optimizer.zero_grad()
             predictions = model(batch)
             
-            # Extract targets and generate realistic odds
+            # Extract targets and market odds from the batch
             targets = batch["targets"]  # [batch_size, 6]
+            market_odds = batch["market_odds"]  # [batch_size, 6] - real market odds from data
             
-            # Generate realistic market odds based on uniform probability with noise
-            # In practice, extract from race.odds when available
-            batch_size = targets.shape[0]
-            with torch.no_grad():
-                # Start with inverse of uniform probability (6.0 for 6 dogs)
-                base_odds = torch.full_like(targets, 6.0)
-                
-                # Add realistic variation: shorter odds for favorites, longer for outsiders
-                noise = torch.randn_like(targets) * 1.5  # Random variation
-                market_odds = base_odds + noise
-                
-                # Ensure realistic range: 1.2 to 20.0
-                market_odds = torch.clamp(market_odds, min=1.2, max=20.0)
-                
-                # Make sure odds sum reasonably (market margin)
-                odds_sum = 1.0 / market_odds.sum(dim=1, keepdim=True)
-                target_margin = 1.1  # 10% overround
-                market_odds = market_odds * (odds_sum / target_margin)
-                market_odds = torch.clamp(market_odds, min=1.1, max=50.0)
-            
-            # Calculate loss
-            loss, metrics = criterion(predictions, targets, market_odds)
+            # Calculate loss using real market odds
+            loss, metrics = train_criterion(predictions, targets, market_odds)
             
             # Backward pass
             loss.backward()
@@ -260,17 +243,9 @@ def train_model(
                 # Forward pass
                 predictions = model(batch)
                 targets = batch["targets"]
+                market_odds = batch["market_odds"]  # Use real market odds from data
                 
-                # Generate realistic market odds for validation too
-                batch_size = targets.shape[0]
-                base_odds = torch.full_like(targets, 6.0)
-                noise = torch.randn_like(targets) * 1.5
-                market_odds = torch.clamp(base_odds + noise, min=1.2, max=20.0)
-                odds_sum = 1.0 / market_odds.sum(dim=1, keepdim=True)
-                market_odds = market_odds * (odds_sum / 1.1)
-                market_odds = torch.clamp(market_odds, min=1.1, max=50.0)
-                
-                loss, metrics = criterion(predictions, targets, market_odds)
+                loss, metrics = val_criterion(predictions, targets, market_odds)
                 
                 val_loss += loss.item()
                 for key, value in metrics.items():
@@ -287,7 +262,12 @@ def train_model(
                 val_metrics[key] /= num_val_batches
         
         # Learning rate scheduling
-        scheduler.step()
+        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            # For plateau scheduler, step with validation metric
+            scheduler.step(val_metrics.get('ppb', 0))
+        else:
+            # For other schedulers, step without arguments
+            scheduler.step()
         
         # Logging with PPB as main metric
         tqdm.write(f"\n📊 Epoch {epoch + 1}/{num_epochs} Results:")
@@ -296,8 +276,10 @@ def train_model(
         tqdm.write(f"   📈 Train ROI: {train_metrics['roi']:.4f}, Val ROI: {val_metrics['roi']:.4f}")
         tqdm.write(f"   🎯 Train Hit Rate: {train_metrics['hit_rate']:.4f}, Val Hit Rate: {val_metrics['hit_rate']:.4f}")
         tqdm.write(f"   🎰 Train Bets: {train_metrics.get('num_bets', 0)}, Val Bets: {val_metrics.get('num_bets', 0)}")
-        tqdm.write(f"   🏁 Valid Races: Train {train_metrics.get('num_valid_races', 0)}, Val {val_metrics.get('num_valid_races', 0)}")
-        tqdm.write(f"   💸 Bet %: {train_metrics.get('bet_percentage', 0.02)*100:.1f}%")
+        tqdm.write(f"   🏁 Complete Races: Train {train_metrics.get('num_complete_races', 0)}, Val {val_metrics.get('num_complete_races', 0)}")
+        tqdm.write(f"   ⚠️  Incomplete Races: Train {train_metrics.get('num_incomplete_races', 0)}, Val {val_metrics.get('num_incomplete_races', 0)}")
+        tqdm.write(f"   💸 Bet %: {train_metrics.get('bet_percentage', 0.02)*100:.1f}%, Alpha: {train_metrics.get('current_alpha', 1.1):.3f}")
+        tqdm.write(f"   📊 Recent Hit Rate: Train {train_metrics.get('recent_hit_rate', 0):.3f}, Val {val_metrics.get('recent_hit_rate', 0):.3f}")
         
         # Save model after every epoch
         epoch_metrics = {
@@ -360,6 +342,45 @@ def train_model(
     return train_losses, val_losses
 
 
+def find_best_model(output_dir: str) -> Optional[str]:
+    """
+    Find the best model checkpoint in the output directory
+    
+    Args:
+        output_dir: Directory to search for model checkpoints
+        
+    Returns:
+        Path to best model checkpoint or None if none found
+    """
+    if not os.path.exists(output_dir):
+        return None
+        
+    # Look for model checkpoints
+    checkpoints = []
+    for filename in os.listdir(output_dir):
+        if filename.startswith('epoch_') and filename.endswith('.pth'):
+            # Extract epoch number
+            try:
+                epoch_str = filename.replace('epoch_', '').replace('.pth', '')
+                epoch = int(epoch_str)
+                checkpoint_path = os.path.join(output_dir, filename)
+                checkpoints.append((epoch, checkpoint_path))
+            except ValueError:
+                continue
+    
+    # Also check for best_model.pth
+    best_model_path = os.path.join(output_dir, 'best_model.pth')
+    if os.path.exists(best_model_path):
+        return best_model_path
+    
+    # Return the latest epoch checkpoint
+    if checkpoints:
+        checkpoints.sort(key=lambda x: x[0], reverse=True)
+        return checkpoints[0][1]
+    
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train Greyhound Racing Model')
     parser.add_argument('--data_dir', type=str, default='data', help='Data directory')
@@ -370,6 +391,8 @@ def main():
     parser.add_argument('--test_split', type=str, default='2023-01-01', help='Test split date')
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from (e.g., outputs/epoch_10.pth)')
     parser.add_argument('--force_rebuild', action='store_true', help='Force rebuild of cached datasets')
+    parser.add_argument('--force_new_model', action='store_true', help='Force creation of new model instead of loading best existing model')
+    parser.add_argument('--lr_scheduler', type=str, default='cosine', choices=['cosine', 'plateau', 'step'], help='Learning rate scheduler type')
     
     args = parser.parse_args()
     
@@ -476,49 +499,87 @@ def main():
         num_going_conditions=len(processor.going_encoder),
         commentary_vocab_size=processor.commentary_processor.vocab_size
     ).to(device)
-    
+
     print(f"🧠 Created model with {sum(p.numel() for p in model.parameters())} parameters")
-    
-    # Create optimizer and scheduler
+
+    # Create optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
-    # Create loss function with optimistic alpha and fixed percentage betting
-    criterion = BettingLoss(alpha=1.1, commission=0.05, bet_percentage=0.02)
+    # Create learning rate scheduler based on choice
+    if args.lr_scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    elif args.lr_scheduler == 'plateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
+    elif args.lr_scheduler == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)  # default
     
-    # Handle resume training
+    print(f"📚 Using {args.lr_scheduler} learning rate scheduler")
+
+    # Create separate loss functions for train and validation to avoid confusion
+    train_criterion = BettingLoss(
+        alpha=1.1,              # Starting alpha (optimistic for early training)
+        commission=0.05,        # 5% commission
+        bet_percentage=0.02,    # 2% of bankroll per bet (not used in unit betting)
+        dynamic_alpha=True,     # Enable dynamic alpha adjustment
+        min_alpha=0.95,         # Conservative minimum
+        max_alpha=1.2           # Optimistic maximum
+    )
+    
+    val_criterion = BettingLoss(
+        alpha=1.1,              # Starting alpha (optimistic for early training)
+        commission=0.05,        # 5% commission
+        bet_percentage=0.02,    # 2% of bankroll per bet (not used in unit betting)
+        dynamic_alpha=True,     # Enable dynamic alpha adjustment
+        min_alpha=0.95,         # Conservative minimum
+        max_alpha=1.2           # Optimistic maximum
+    )
+
+    # Handle model loading - check for best existing model unless forced to create new
     start_epoch = 0
     best_val_profit = float('-inf')
     
     if args.resume:
-        if not os.path.exists(args.resume):
-            print(f"❌ Resume checkpoint not found: {args.resume}")
-            print("💡 To resume training, use: --resume path/to/epoch_N.pth")
-            print("💡 Available checkpoints:")
-            for f in os.listdir(args.output_dir):
-                if f.startswith('epoch_') and f.endswith('.pth'):
-                    print(f"   {os.path.join(args.output_dir, f)}")
-            return
+        # Explicit resume from specific checkpoint
+        start_epoch, best_val_profit = load_checkpoint_for_resume(
+            args.resume, model, optimizer, scheduler, device
+        )
+    elif not args.force_new_model:
+        # Auto-load best existing model
+        best_model_path = find_best_model(args.output_dir)
+        if best_model_path:
+            print(f"🔄 Auto-loading best existing model from: {best_model_path}")
+            try:
+                start_epoch, best_val_profit = load_checkpoint_for_resume(
+                    best_model_path, model, optimizer, scheduler, device
+                )
+            except Exception as e:
+                print(f"⚠️  Failed to load existing model: {e}")
+                print("   Starting with new model...")
+                start_epoch = 0
+                best_val_profit = float('-inf')
         else:
-            start_epoch, best_val_profit = load_checkpoint_for_resume(
-                args.resume, model, optimizer, scheduler, device
-            )
-    
+            print("📦 No existing model found, starting with new model")
+    else:
+        print("🆕 Force creating new model (--force_new_model specified)")
+
     print(f"\n🚀 Starting training from epoch {start_epoch+1} to {args.epochs}...")
-    if args.resume:
-        print(f"📁 Resuming from: {args.resume}")
+    if start_epoch > 0:
+        print(f"📁 Loaded model from previous training")
         print(f"🎯 Current best validation profit: {best_val_profit:.4f}")
-    
+
     print("\n💡 Training Tips:")
     print("   • Models are saved after every epoch as 'epoch_N.pth'")
     print("   • Best model is saved as 'best_model.pth'")
     print("   • To resume training: --resume outputs/epoch_N.pth")
+    print("   • Use --force_new_model to start fresh")
     print("   • Use Ctrl+C to stop training gracefully")
     
     # Train model
     try:
         train_losses, val_losses = train_model(
-            model, train_loader, val_loader, criterion, optimizer, scheduler,
+            model, train_loader, val_loader, train_criterion, val_criterion, optimizer, scheduler,
             args.epochs, device, args.output_dir, start_epoch, best_val_profit
         )
         

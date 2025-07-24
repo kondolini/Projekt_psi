@@ -144,7 +144,27 @@ class Race:
         return cls.from_participations(participations) if participations else None
 
     def is_trial_race(self) -> bool:
+        """Check if this is a trial race (no odds data)"""
         return not self.odds or all(v is None for v in self.odds.values())
+    
+    def is_test_race(self) -> bool:
+        """Alias for is_trial_race for compatibility"""
+        return self.is_trial_race()
+    
+    def has_complete_field(self, min_prob_sum: float = 0.95) -> bool:
+        """
+        Check if race has complete field based on implied probability sum
+        Races with sum < min_prob_sum likely have missing participants
+        """
+        if not self.implied_probs:
+            return False
+        
+        valid_probs = [p for p in self.implied_probs.values() if p is not None]
+        if len(valid_probs) < 3:  # Need at least 3 participants
+            return False
+            
+        prob_sum = sum(valid_probs)
+        return prob_sum >= min_prob_sum
 
     def save(self, path: str):
         with open(path, "wb") as f:

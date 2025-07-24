@@ -355,19 +355,60 @@ class GreyhoundRacingModel(nn.Module):
 
 class BettingLoss(nn.Module):
     """
-    Custom loss function that optimizes for betting profitability
-    Uses fixed percentage betting on highest expected value dog
+    Simplified loss function that optimizes for betting profitability
+    Uses unit betting (1 unit per race) to avoid balance tracking issues
     """
     
-    def __init__(self, alpha: float = 1.1, commission: float = 0.05, starting_balance: float = 1000.0, bet_percentage: float = 0.02):
+    def __init__(self, alpha: float = 1.1, commission: float = 0.05, 
+                 bet_percentage: float = 0.02, dynamic_alpha: bool = True, 
+                 min_alpha: float = 0.95, max_alpha: float = 1.2):
         super().__init__()
-        self.alpha = alpha      # Odds reduction factor (market movement) - optimistic early training
-        self.commission = commission  # Exchange commission
-        self.starting_balance = starting_balance
-        self.bet_percentage = bet_percentage  # Fixed percentage of bankroll to bet (2%)
-        self.balance = starting_balance  # Track running balance
-        self.total_races = 0
+        self.base_alpha = alpha
+        self.alpha = alpha
+        self.commission = commission
+        self.bet_percentage = bet_percentage  # Not used in unit betting but kept for compatibility
+        
+        # Dynamic alpha parameters
+        self.dynamic_alpha = dynamic_alpha
+        self.min_alpha = min_alpha
+        self.max_alpha = max_alpha
+        
+        # Tracking variables
         self.total_profit = 0.0
+        self.total_races = 0
+        
+    def reset_balance(self):
+        """Reset the cumulative tracking for new epoch"""
+        self.total_profit = 0.0
+        self.total_races = 0
+        
+    def _update_dynamic_alpha(self, recent_results: List[int]):
+        """Update alpha based on recent performance (within batch only)"""
+        if not self.dynamic_alpha or len(recent_results) < 10:
+            return
+            
+        hit_rate = sum(recent_results) / len(recent_results)
+        target_hit_rate = 0.25
+        
+        if hit_rate < target_hit_rate - 0.05:
+            self.alpha = min(self.alpha * 1.02, self.max_alpha)
+        elif hit_rate > target_hit_rate + 0.05:
+            self.alpha = max(self.alpha * 0.98, self.min_alpha)
+            
+    def _update_dynamic_alpha_by_rate(self, hit_rate: float, ppb: float):
+        """Update alpha based on hit rate and profit per bet"""
+        if not self.dynamic_alpha:
+            return
+            
+        target_hit_rate = 0.25
+        
+        # Adjust alpha based on performance
+        if hit_rate < target_hit_rate - 0.05 and ppb < 0:
+            # Poor performance, increase optimism slightly
+            self.alpha = min(self.alpha * 1.01, self.max_alpha)
+        elif hit_rate > target_hit_rate + 0.05 and ppb > 0:
+            # Good performance, reduce optimism slightly  
+            self.alpha = max(self.alpha * 0.99, self.min_alpha)
         
     def forward(
         self, 
@@ -376,107 +417,189 @@ class BettingLoss(nn.Module):
         market_odds: torch.Tensor       # [batch_size, 6] market odds
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Calculate betting loss using fixed percentage strategy
+        Calculate betting loss using simplified unit betting strategy
         
-        Strategy: Bet fixed percentage on dog with highest expected profit
+        Strategy: Bet 1 unit on dog with highest expected profit (ALWAYS bet on valid races)
         """
         batch_size, num_traps = predicted_probs.shape
+        device = predicted_probs.device
         
         # Check for races without odds (test races) - skip them
         has_valid_odds = torch.any(market_odds > 0, dim=1)  # [batch_size]
         
-        # Calculate expected profits for each dog (only for races with odds)
+        # Check for incomplete races (implied probabilities sum < 1.0)
+        with torch.no_grad():
+            implied_probs = 1.0 / torch.clamp(market_odds, min=1.01)
+            implied_probs_sum = implied_probs.sum(dim=1)
+            has_complete_field = implied_probs_sum >= 0.90  # Allow tolerance
+        
+        # Only consider races with valid odds AND complete field
+        valid_races = has_valid_odds & has_complete_field
+        
+        if not valid_races.any():
+            # No valid races - return basic prediction loss
+            winner_indices = true_winners.argmax(dim=1)
+            prediction_loss = F.cross_entropy(predicted_probs, winner_indices)
+            
+            return prediction_loss, {
+                "expected_profit": 0.0,
+                "actual_profit": 0.0,
+                "ppb": 0.0,
+                "roi": 0.0,
+                "hit_rate": 0.0,
+                "num_bets": 0,
+                "num_valid_races": has_valid_odds.sum().item(),
+                "num_complete_races": 0,
+                "num_incomplete_races": has_valid_odds.sum().item(),
+                "prediction_loss": prediction_loss.item(),
+                "betting_loss": 0.0,
+                "current_alpha": self.alpha
+            }
+        
+        # Calculate expected profits for each dog (MUST BE DIFFERENTIABLE!)
         expected_profits_per_dog = torch.zeros_like(predicted_probs)
         
-        # Only calculate for races with valid odds
-        valid_mask = has_valid_odds.unsqueeze(1).expand_as(predicted_probs)
+        # Only calculate for valid races - KEEP GRADIENTS FLOWING
+        valid_mask = valid_races.unsqueeze(1).expand_as(predicted_probs)
+        # Simplified expected profit: (odds * alpha * prob - 1) for unit betting
         expected_profits_per_dog[valid_mask] = (
-            (market_odds[valid_mask] * self.alpha * predicted_probs[valid_mask] - 1) * 
-            self.bet_percentage * (1 - self.commission)
-        )
+            market_odds[valid_mask] * self.alpha * predicted_probs[valid_mask] - 1.0
+        ) * (1 - self.commission)
         
-        # For each race, bet only on the dog with highest expected profit
-        best_dog_indices = torch.argmax(expected_profits_per_dog, dim=1)  # [batch_size]
-        best_expected_profits = torch.gather(expected_profits_per_dog, 1, best_dog_indices.unsqueeze(1)).squeeze(1)
+        # SIMPLIFIED SOFT SELECTION: Use temperature-scaled softmax (more stable than Gumbel-Softmax)
+        temperature = 0.1
         
-        # Only bet if expected profit is positive AND race has valid odds
-        should_bet = (best_expected_profits > 0) & has_valid_odds
-        
-        # Calculate actual outcomes
-        actual_profits = torch.zeros_like(best_expected_profits)
-        bet_amounts = torch.zeros_like(best_expected_profits)
-        
-        for i in range(batch_size):
-            if should_bet[i]:
-                dog_idx = best_dog_indices[i]
-                bet_amount = self.bet_percentage  # Fixed percentage
-                bet_amounts[i] = bet_amount
-                
-                # Check if this dog won
-                if true_winners[i, dog_idx] > 0.5:  # Winner
-                    payout = market_odds[i, dog_idx] * self.alpha * bet_amount
-                    actual_profits[i] = (payout - bet_amount) * (1 - self.commission)
-                else:  # Loser
-                    actual_profits[i] = -bet_amount * (1 - self.commission)
-        
-        # Update balance tracking (only for races with valid odds)
-        valid_races_count = has_valid_odds.sum().item()
-        batch_profit = actual_profits.sum().item()
-        self.total_profit += batch_profit
-        self.total_races += valid_races_count  # Only count races with odds
-        
-        # Calculate PPB (Profit Per Bet) - only for races with odds
-        ppb = self.total_profit / max(self.total_races, 1)
-        
-        # Loss = negative expected profit (we want to maximize profit)
-        # Only consider races with valid odds for loss calculation
-        if should_bet.any():
-            total_expected_profit = best_expected_profits[should_bet].sum()
+        # Calculate soft selection weights for all races
+        if valid_races.any():
+            # Scale expected profits by temperature for soft selection
+            scaled_logits = expected_profits_per_dog / temperature
+            
+            # Apply softmax only to valid races
+            soft_selection = torch.zeros_like(predicted_probs)
+            
+            # For valid races, use softmax selection
+            valid_scaled_logits = scaled_logits[valid_races]
+            valid_soft_selection = F.softmax(valid_scaled_logits, dim=1)
+            soft_selection[valid_races] = valid_soft_selection
         else:
-            # If no bets, use a small penalty based on max predicted probability to maintain gradients
-            max_probs = predicted_probs.max(dim=1)[0]  # [batch_size]
-            total_expected_profit = -max_probs.mean() * 0.1  # Small penalty to encourage confident predictions
+            # No valid races - uniform selection
+            soft_selection = torch.ones_like(predicted_probs) / num_traps
         
-        loss = -total_expected_profit / batch_size  # Normalize by batch size
+        # Calculate soft expected profit (differentiable)
+        soft_expected_profits = (soft_selection * expected_profits_per_dog).sum(dim=1)  # [batch_size]
         
-        # Ensure loss has gradients
-        if not loss.requires_grad:
-            # This should not happen, but as a safeguard
-            loss = loss + predicted_probs.mean() * 0.0  # Add a term that depends on predictions
+        # Hard selection for actual betting simulation (non-differentiable path)
+        with torch.no_grad():
+            best_dog_indices = torch.argmax(expected_profits_per_dog, dim=1)
+            
+            # Calculate actual outcomes for valid races only
+            actual_profits = torch.zeros(batch_size, device=device)
+            num_wins = 0
+            num_bets = 0
+            
+            for i in range(batch_size):
+                if valid_races[i]:
+                    dog_idx = best_dog_indices[i]
+                    num_bets += 1
+                    
+                    # Unit betting: always bet 1 unit per race
+                    bet_amount = 1.0
+                    
+                    # Check if this dog won
+                    won = true_winners[i, dog_idx] > 0.5
+                    if won:
+                        # Profit = (odds * bet_amount) - bet_amount = bet_amount * (odds - 1)
+                        profit = bet_amount * (market_odds[i, dog_idx] - 1.0) * (1 - self.commission)
+                        actual_profits[i] = profit
+                        num_wins += 1
+                    else:
+                        # Loss = -bet_amount
+                        actual_profits[i] = -bet_amount
+            
+            # Update cumulative tracking (unit betting)
+            batch_profit = actual_profits[valid_races].sum().item() if valid_races.any() else 0.0
+            batch_bets = valid_races.sum().item()
+            
+            # Update totals
+            self.total_profit += batch_profit
+            self.total_races += batch_bets
+            
+            # Update alpha based on batch results
+            hit_rate = num_wins / max(num_bets, 1) if num_bets > 0 else 0.0
+            self._update_dynamic_alpha_by_rate(hit_rate, batch_profit / max(num_bets, 1) if num_bets > 0 else 0.0)
+        
+        # SIMPLIFIED LOSS CALCULATION - FOCUS ON PROFITABILITY
+        # 1. Prediction accuracy loss (for general learning)
+        if valid_races.any():
+            valid_predicted_probs = predicted_probs[valid_races]
+            valid_true_winners = true_winners[valid_races]
+            valid_winner_indices = valid_true_winners.argmax(dim=1)
+            prediction_loss = F.cross_entropy(valid_predicted_probs, valid_winner_indices)
+        else:
+            prediction_loss = F.cross_entropy(predicted_probs, true_winners.argmax(dim=1))
+        
+        # 2. PROFIT MAXIMIZATION LOSS - Direct optimization of expected profits
+        if valid_races.any() and soft_expected_profits.numel() > 0:
+            # Calculate mean expected profit for valid races
+            valid_soft_profits = soft_expected_profits[valid_races]
+            
+            # Clamp to prevent extreme values
+            valid_soft_profits = torch.clamp(valid_soft_profits, min=-10.0, max=10.0)
+            
+            # Direct profit loss: maximize expected profit
+            profit_loss = -valid_soft_profits.mean()
+            
+            # Check for NaN/inf and use fallback
+            if torch.isfinite(profit_loss):
+                betting_loss = profit_loss
+            else:
+                betting_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        else:
+            betting_loss = torch.tensor(0.0, device=device, requires_grad=True)
+        
+        # 3. AGGRESSIVE WEIGHTING - Focus heavily on profit
+        loss = 0.3 * prediction_loss + 0.7 * betting_loss
+        
+        # Final safety check
+        if not torch.isfinite(loss) or torch.isnan(loss):
+            print(f"⚠️ Loss is not finite! Using prediction loss only. pred_loss: {prediction_loss.item()}, betting_loss: {betting_loss.item()}")
+            loss = prediction_loss
         
         # Calculate metrics
         with torch.no_grad():
-            num_bets = should_bet.sum().item()
-            total_bet_amount = bet_amounts[should_bet].sum().item() if num_bets > 0 else 0.0
-            roi = batch_profit / max(total_bet_amount, 1e-8)
-            hit_rate = (actual_profits > 0).float().mean().item() if num_bets > 0 else 0.0
+            num_valid_bets = valid_races.sum().item()
+            total_actual_profit = actual_profits[valid_races].sum().item() if num_valid_bets > 0 else 0.0
             
-            # Calculate expected profit for metrics (only from actual bets)
-            expected_profit_for_metrics = best_expected_profits[should_bet].sum().item() / batch_size if should_bet.any() else 0.0
+            # PPB: Profit Per Bet (for valid races only)
+            ppb = total_actual_profit / max(num_valid_bets, 1)
             
-            # Additional metrics for tracking
-            num_valid_odds_races = has_valid_odds.sum().item()
+            # ROI: Return on Investment (profit / amount bet)
+            total_bet_amount = num_valid_bets * 1.0  # Unit betting
+            roi = total_actual_profit / max(total_bet_amount, 1e-8)
+            
+            # Hit rate: calculate from actual profits (wins vs losses)
+            hit_rate = num_wins / max(num_bets, 1) if num_bets > 0 else 0.0
             
             metrics = {
-                "expected_profit": expected_profit_for_metrics,
-                "actual_profit": batch_profit / batch_size,
-                "ppb": ppb,  # Profit Per Bet (main metric)
+                "expected_profit": soft_expected_profits[valid_races].sum().item() / max(num_valid_bets, 1) if num_valid_bets > 0 else 0.0,
+                "actual_profit": ppb,  # Same as PPB for unit betting
+                "ppb": ppb,
                 "roi": roi,
                 "hit_rate": hit_rate,
-                "num_bets": num_bets,
-                "num_valid_races": num_valid_odds_races,  # Track races with odds vs test races
-                "total_balance": self.starting_balance + self.total_profit,
-                "avg_bet_size": total_bet_amount / max(num_bets, 1),
-                "bet_percentage": self.bet_percentage
+                "num_bets": num_valid_bets,
+                "num_valid_races": has_valid_odds.sum().item(),
+                "num_complete_races": valid_races.sum().item(),
+                "num_incomplete_races": has_valid_odds.sum().item() - valid_races.sum().item(),
+                "prediction_loss": prediction_loss.item(),
+                "betting_loss": betting_loss.item(),
+                "current_alpha": self.alpha,
+                "total_balance": 1000.0 + self.total_profit,  # Running total balance
+                "batch_profit": batch_profit,  # Profit from this batch only
+                "total_profit": self.total_profit,  # Total cumulative profit
+                "avg_bet_size": 1.0  # Unit betting
             }
         
         return loss, metrics
-    
-    def reset_balance(self):
-        """Reset balance tracking for new epoch"""
-        self.balance = self.starting_balance
-        self.total_races = 0
-        self.total_profit = 0.0
     
 
 def collate_race_batch(batch_list: List[Dict]) -> Dict[str, torch.Tensor]:
