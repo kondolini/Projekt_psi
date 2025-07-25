@@ -1,0 +1,50 @@
+2025-07-25 10:03:39,628 - __main__ - INFO - Starting training run: greyhound_run_20250725_100339
+2025-07-25 10:03:39,628 - __main__ - INFO - Output directory: machine_learning/outputs\greyhound_run_20250725_100339
+2025-07-25 10:03:39,652 - root - INFO - Random seeds set to 42
+2025-07-25 10:03:39,733 - __main__ - INFO - Using device: cuda
+2025-07-25 10:03:39,741 - __main__ - INFO - Loading data from buckets...
+2025-07-25 10:03:39,742 - machine_learning.dataset - INFO - Loading dogs from enhanced directory...
+2025-07-25 10:04:04,207 - machine_learning.dataset - INFO - Loaded 110456 dogs
+2025-07-25 10:04:04,819 - machine_learning.dataset - INFO - Loading races from buckets...
+2025-07-25 10:04:30,656 - machine_learning.dataset - INFO - Loaded 620255 races
+2025-07-25 10:04:31,173 - machine_learning.dataset - INFO - Train/Val split: 487539 train, 132716 validation races
+2025-07-25 10:04:31,173 - __main__ - INFO - Creating datasets...
+2025-07-25 10:11:30,473 - machine_learning.dataset - INFO - Vocabulary sizes: {'num_tracks': 30, 'num_classes': 74, 'num_categories': 1, 'num_trainers': 1285, 'num_going_conditions': 72, 'commentary_vocab_size': 19078}
+2025-07-25 10:11:30,488 - machine_learning.dataset - INFO - Dataset initialized with 472230 valid races
+2025-07-25 10:13:49,274 - machine_learning.dataset - INFO - Vocabulary sizes: {'num_tracks': 24, 'num_classes': 52, 'num_categories': 1, 'num_trainers': 557, 'num_going_conditions': 59, 'commentary_vocab_size': 12369}
+2025-07-25 10:13:49,278 - machine_learning.dataset - INFO - Dataset initialized with 130425 valid races
+2025-07-25 10:13:49,331 - __main__ - INFO - Created data loaders - Train: 14757 batches, Val: 4076 batches
+2025-07-25 10:13:49,461 - root - INFO - Encoders saved to machine_learning/outputs\greyhound_run_20250725_100339\encoders\encoders.pkl
+2025-07-25 10:13:49,462 - __main__ - INFO - Creating model...
+2025-07-25 10:13:52,011 - machine_learning.trainer - INFO - Trainer initialized. Device: cuda
+2025-07-25 10:13:52,011 - machine_learning.trainer - INFO - Model parameters: 3,597,105
+2025-07-25 10:13:52,013 - root - INFO - Run configuration saved to machine_learning/outputs\greyhound_run_20250725_100339\outputs\run_config.json
+2025-07-25 10:13:52,014 - __main__ - INFO - Starting training for 200 epochs
+2025-07-25 10:13:52,014 - __main__ - INFO - Loss function - Alpha: 1.2, Temperature: 2.0, Commission: 0.05
+2025-07-25 10:13:52,014 - __main__ - INFO - Early stopping patience: 20 epochs
+2025-07-25 10:13:52,014 - machine_learning.trainer - INFO - Starting training for 200 epochs
+2025-07-25 10:13:52,014 - machine_learning.trainer - INFO - Initial temperature: 2.0
+2025-07-25 10:13:52,959 - machine_learning.trainer - ERROR - Training error: Tensors must have same number of dimensions: got 2 and 3
+2025-07-25 10:13:52,984 - machine_learning.trainer - INFO - Checkpoint saved: machine_learning/outputs\greyhound_run_20250725_100339\checkpoints\error_checkpoint.pth
+2025-07-25 10:13:52,985 - __main__ - ERROR - Training failed with error: Tensors must have same number of dimensions: got 2 and 3
+2025-07-25 10:13:53,039 - __main__ - ERROR - Traceback (most recent call last):
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\train.py", line 390, in main
+    training_history = trainer.train(
+                       ^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\trainer.py", line 298, in train
+    train_metrics = self.train_epoch()
+                    ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\trainer.py", line 156, in train_epoch
+    model_probs = self.model(batch)
+                  ^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\nn\modules\module.py", line 1739, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\nn\modules\module.py", line 1750, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\model.py", line 142, in forward
+    race_combined = torch.cat([race_dense, track_emb, class_emb, category_emb], dim=1)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Tensors must have same number of dimensions: got 2 and 3
+

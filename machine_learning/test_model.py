@@ -5,8 +5,14 @@ Quick test to verify the model implementation is working correctly.
 This script tests model instantiation and forward pass without training.
 """
 
+import os
+import sys
 import torch
 import numpy as np
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, parent_dir)
+
 from machine_learning.model import GreyhoundRacingModel
 from machine_learning.loss import GreyhoundBettingLoss, hard_betting_evaluation
 
@@ -72,7 +78,7 @@ def test_model_forward():
         
         # Labels and odds
         'win_labels': torch.zeros(batch_size, max_dogs),
-        'market_odds': torch.uniform_(torch.empty(batch_size, max_dogs), 1.5, 10.0)
+        'market_odds': torch.empty(batch_size, max_dogs).uniform_(1.5, 10.0)
     }
     
     # Set winners (one per race)
@@ -122,7 +128,7 @@ def test_loss_function():
     max_dogs = 6
     
     model_probs = torch.softmax(torch.randn(batch_size, max_dogs), dim=1)
-    market_odds = torch.uniform_(torch.empty(batch_size, max_dogs), 1.5, 10.0)
+    market_odds = torch.empty(batch_size, max_dogs).uniform_(1.5, 10.0)
     actual_winners = torch.zeros(batch_size, max_dogs)
     dog_mask = torch.ones(batch_size, max_dogs, dtype=torch.bool)
     

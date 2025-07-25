@@ -192,9 +192,9 @@ class GreyhoundDataset(Dataset):
         return {
             # Race features
             'race_features': torch.FloatTensor(race_features),
-            'track_ids': torch.LongTensor([track_id]),
-            'class_ids': torch.LongTensor([class_id]),
-            'category_ids': torch.LongTensor([category_id]),
+            'track_ids': track_id,
+            'class_ids': class_id,
+            'category_ids': category_id,
             
             # Dog features
             'dog_features': torch.FloatTensor(dogs_data['dog_features']),
