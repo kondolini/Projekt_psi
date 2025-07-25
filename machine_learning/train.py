@@ -377,7 +377,7 @@ def load_and_prepare_data(args):
         cache_manager.save_datasets(train_dataset, val_dataset, data_dirs, config, metadata)
     
     # Print data summary
-    print_data_summary(train_dataset, val_dataset, dog_lookup)
+    print_data_summary(train_dataset, val_dataset)
     
     return train_dataset, val_dataset, vocab_sizes, dog_lookup
 

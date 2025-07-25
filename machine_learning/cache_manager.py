@@ -157,7 +157,7 @@ class CacheManager:
                     if os.path.exists(f):
                         os.remove(f)
         
-        logger.info("❌ Cache miss - will process data from scratch")
+        logger.info("Cache miss - will process data from scratch")
         return None
     
     def save_datasets(self, train_data: Any, val_data: Any, data_dirs: Dict[str, str], 
@@ -208,7 +208,7 @@ class CacheManager:
             }
             self._save_cache_info()
             
-            logger.info(f"✅ Datasets cached successfully")
+            logger.info(f"Datasets cached successfully")
             
         except Exception as e:
             logger.error(f"Could not save datasets to cache: {e}")
@@ -254,7 +254,7 @@ class CacheManager:
                     if os.path.exists(f):
                         os.remove(f)
         
-        logger.info("❌ Encoder cache miss - will build encoders from scratch")
+        logger.info("Encoder cache miss - will build encoders from scratch")
         return None
     
     def save_encoders(self, encoders: Dict, vocab_sizes: Dict, data_dirs: Dict[str, str], config: Dict):
@@ -290,7 +290,7 @@ class CacheManager:
             }
             self._save_cache_info()
             
-            logger.info("✅ Encoders cached successfully")
+            logger.info("Encoders cached successfully")
             
         except Exception as e:
             logger.error(f"Could not save encoders to cache: {e}")

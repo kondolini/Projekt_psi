@@ -12,6 +12,9 @@ import re
 from sklearn.preprocessing import LabelEncoder
 import logging
 from tqdm import tqdm
+import multiprocessing as mp
+from functools import partial
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 # Add parent directory to path for imports - make it more robust
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +28,257 @@ from models.track import Track
 from .cache_manager import CacheManager
 
 logger = logging.getLogger(__name__)
+
+
+def process_race_batch_for_vocab(args) -> Dict[str, set]:
+    """
+    Process a batch of races to extract vocabulary items (for multiprocessing)
+    
+    Args:
+        args: Tuple of (races_batch, dog_lookup)
+        
+    Returns:
+        Dictionary with vocabulary sets
+    """
+    races_batch, dog_lookup = args
+    
+    # Local vocabulary sets
+    tracks = set()
+    classes = set()
+    categories = set()
+    trainers = set()
+    going_conditions = set()
+    commentary_vocab = set()
+    
+    for race in races_batch:
+        tracks.add(race.track_name)
+        classes.add(race.race_class or 'Unknown')
+        categories.add(race.category or 'Unknown')
+        
+        # Add race commentary
+        for tags in race.commentary_tags.values():
+            for tag in tags:
+                words = re.findall(r'\b\w+\b', tag.lower())
+                commentary_vocab.update(words)
+        
+        # Get dog information for this race
+        for dog_id in race.dog_ids.values():
+            if dog_id in dog_lookup:
+                dog = dog_lookup[dog_id]
+                if dog.trainer:
+                    trainers.add(dog.trainer)
+                
+                # Process historical races for vocabulary
+                race_datetime = datetime.combine(race.race_date, race.race_time)
+                historical_participations = dog.get_last_n_races_before(race_datetime, 20)
+                
+                for participation in historical_participations:
+                    if participation.going:
+                        going_conditions.add(participation.going)
+                    
+                    # Extract commentary vocabulary
+                    for tag in participation.commentary_tags:
+                        words = re.findall(r'\b\w+\b', tag.lower())
+                        commentary_vocab.update(words)
+    
+    return {
+        'tracks': tracks,
+        'classes': classes,
+        'categories': categories,
+        'trainers': trainers,
+        'going_conditions': going_conditions,
+        'commentary_vocab': commentary_vocab
+    }
+
+
+def process_race_for_dataset(args) -> Optional[Dict]:
+    """
+    Process a single race to create dataset sample (for multiprocessing)
+    
+    Args:
+        args: Tuple of (race_index, race, dog_lookup, encoders, max_dogs_per_race, max_history_length, max_commentary_length)
+        
+    Returns:
+        Processed race data or None if invalid
+    """
+    try:
+        race_index, race, dog_lookup, encoders, max_dogs_per_race, max_history_length, max_commentary_length = args
+        
+        # Check if race has minimum required dogs
+        dogs_available = sum(1 for dog_id in race.dog_ids.values() if dog_id in dog_lookup)
+        if dogs_available < 3:  # min_dogs_per_race
+            return None
+        
+        # Process race features
+        race_features = []
+        
+        # Distance (normalized)
+        distance_normalized = (race.distance - 300) / 500 if race.distance else 0.0
+        race_features.append(distance_normalized)
+        
+        # Weather features
+        if race.rainfall_7d and len(race.rainfall_7d) >= 7:
+            race_features.extend(race.rainfall_7d[:7])
+        else:
+            race_features.extend([0.0] * 7)
+        
+        race_features = np.array(race_features[:8], dtype=np.float32)
+        
+        # Encode categorical features
+        track_id = encoders['track_encoder'].transform([race.track_name or 'Unknown'])[0]
+        class_id = encoders['class_encoder'].transform([race.race_class or 'Unknown'])[0]
+        category_id = encoders['category_encoder'].transform([race.category or 'Unknown'])[0]
+        
+        # Process dogs
+        dog_features = []
+        trainer_ids = []
+        dog_ids = []
+        win_labels = []
+        market_odds = []
+        history_features = []
+        going_ids = []
+        commentary_ids = []
+        history_mask = []
+        
+        # Get race results for win labels
+        race_positions = {}
+        for trap_num, dog_id in race.dog_ids.items():
+            if dog_id in dog_lookup:
+                dog = dog_lookup[dog_id]
+                race_datetime = datetime.combine(race.race_date, race.race_time)
+                participation = dog.get_race_participation(race.race_id, race_datetime)
+                if participation and participation.position is not None:
+                    race_positions[trap_num] = participation.position
+        
+        # Process each trap position
+        for trap_num in range(1, max_dogs_per_race + 1):
+            if trap_num in race.dog_ids:
+                dog_id = race.dog_ids[trap_num]
+                if dog_id in dog_lookup:
+                    dog = dog_lookup[dog_id]
+                    
+                    # Dog static features
+                    dog_age = dog.age_at_race(race.race_date) if hasattr(dog, 'age_at_race') else 0.0
+                    dog_weight = dog.weight if hasattr(dog, 'weight') and dog.weight else 30.0
+                    dog_feat = [dog_age, dog_weight, 1.0]  # 1.0 indicates valid dog
+                    
+                    # Trainer
+                    trainer_name = dog.trainer or 'Unknown'
+                    trainer_id = encoders['trainer_encoder'].transform([trainer_name])[0]
+                    
+                    # Win label
+                    win_label = 1.0 if race_positions.get(trap_num) == 1 else 0.0
+                    
+                    # Market odds
+                    odds = race.odds.get(trap_num, 5.0) if race.odds else 5.0
+                    
+                    # Historical features
+                    race_datetime = datetime.combine(race.race_date, race.race_time)
+                    hist_participations = dog.get_last_n_races_before(race_datetime, max_history_length)
+                    
+                    hist_features = []
+                    hist_going = []
+                    hist_commentary = []
+                    hist_mask_seq = []
+                    
+                    for i in range(max_history_length):
+                        if i < len(hist_participations):
+                            participation = hist_participations[i]
+                            
+                            # Historical race features
+                            hist_time = participation.finish_time if participation.finish_time else 30.0
+                            hist_pos = participation.position if participation.position else 4.0
+                            hist_odds = participation.odds if participation.odds else 5.0
+                            hist_features.append([hist_time, hist_pos, hist_odds])
+                            
+                            # Going condition
+                            going_name = participation.going or 'Unknown'
+                            going_id = encoders['going_encoder'].transform([going_name])[0]
+                            hist_going.append(going_id)
+                            
+                            # Commentary
+                            commentary_encoded = []
+                            for j in range(max_commentary_length):
+                                if j < len(participation.commentary_tags):
+                                    tag = participation.commentary_tags[j].lower()
+                                    words = re.findall(r'\b\w+\b', tag)
+                                    if words:
+                                        word = words[0]  # Take first word
+                                        word_id = encoders['commentary_encoder'].get(word, encoders['commentary_encoder']['<UNK>'])
+                                    else:
+                                        word_id = encoders['commentary_encoder']['<PAD>']
+                                else:
+                                    word_id = encoders['commentary_encoder']['<PAD>']
+                                commentary_encoded.append(word_id)
+                            hist_commentary.append(commentary_encoded)
+                            
+                            hist_mask_seq.append(True)
+                        else:
+                            # Padding
+                            hist_features.append([0.0, 0.0, 0.0])
+                            hist_going.append(0)  # Padding ID
+                            hist_commentary.append([0] * max_commentary_length)  # Padding IDs
+                            hist_mask_seq.append(False)
+                    
+                    dog_features.append(dog_feat)
+                    trainer_ids.append(trainer_id)
+                    dog_ids.append(int(dog_id) if dog_id.isdigit() else 0)
+                    win_labels.append(win_label)
+                    market_odds.append(odds)
+                    history_features.append(hist_features)
+                    going_ids.append(hist_going)
+                    commentary_ids.append(hist_commentary)
+                    history_mask.append(hist_mask_seq)
+                else:
+                    # Invalid dog - padding
+                    dog_features.append([0.0, 0.0, 0.0])
+                    trainer_ids.append(0)
+                    dog_ids.append(0)
+                    win_labels.append(0.0)
+                    market_odds.append(5.0)
+                    history_features.append([[0.0, 0.0, 0.0]] * max_history_length)
+                    going_ids.append([0] * max_history_length)
+                    commentary_ids.append([[0] * max_commentary_length] * max_history_length)
+                    history_mask.append([False] * max_history_length)
+            else:
+                # Empty trap - padding
+                dog_features.append([0.0, 0.0, 0.0])
+                trainer_ids.append(0)
+                dog_ids.append(0)
+                win_labels.append(0.0)
+                market_odds.append(5.0)
+                history_features.append([[0.0, 0.0, 0.0]] * max_history_length)
+                going_ids.append([0] * max_history_length)
+                commentary_ids.append([[0] * max_commentary_length] * max_history_length)
+                history_mask.append([False] * max_history_length)
+        
+        # Create dog mask (which positions have valid dogs)
+        dog_mask = []
+        for trap_num in range(1, max_dogs_per_race + 1):
+            has_valid_dog = (trap_num in race.dog_ids and 
+                           race.dog_ids[trap_num] in dog_lookup)
+            dog_mask.append(has_valid_dog)
+        
+        return {
+            'race_features': np.array(race_features, dtype=np.float32),
+            'track_ids': track_id,
+            'class_ids': class_id,
+            'category_ids': category_id,
+            'dog_features': np.array(dog_features, dtype=np.float32),
+            'trainer_ids': np.array(trainer_ids, dtype=np.int32),
+            'dog_ids': np.array(dog_ids, dtype=np.int32),
+            'dog_mask': np.array(dog_mask, dtype=bool),
+            'win_labels': np.array(win_labels, dtype=np.float32),
+            'market_odds': np.array(market_odds, dtype=np.float32),
+            'history_features': np.array(history_features, dtype=np.float32),
+            'going_ids': np.array(going_ids, dtype=np.int32),
+            'commentary_ids': np.array(commentary_ids, dtype=np.int32),
+            'history_mask': np.array(history_mask, dtype=bool)
+        }
+        
+    except Exception as e:
+        logger.warning(f"Error processing race {race_index}: {e}")
+        return None
 
 
 class GreyhoundDataset(Dataset):
@@ -94,7 +348,7 @@ class GreyhoundDataset(Dataset):
         valid_races = []
         
         for race in races:
-            # Skip trial races if specified
+            # Skip trial races if specified (they typically don't have odds)
             if exclude_trial_races and race.is_trial_race():
                 continue
                 
@@ -105,6 +359,25 @@ class GreyhoundDataset(Dataset):
             # Check if race has complete field (for betting races)
             if not exclude_trial_races and not race.has_complete_field():
                 continue
+            
+            # CRITICAL: Ensure race has odds for all dogs (required for training)
+            if not race.odds or len(race.odds) < self.min_dogs_per_race:
+                continue
+            
+            # Verify odds are valid numbers and implied probabilities sum > 1.0
+            valid_odds = []
+            for trap_num in race.dog_ids.keys():
+                if trap_num not in race.odds:
+                    break  # Missing odds for this dog
+                odds_value = race.odds[trap_num]
+                if odds_value is None or odds_value <= 0:
+                    break  # Invalid odds
+                valid_odds.append(odds_value)
+            else:
+                # All dogs have valid odds, check implied probability sum
+                implied_prob_sum = sum(1.0 / odds for odds in valid_odds)
+                if implied_prob_sum <= 1.0:
+                    continue  # Market not complete (missing dogs/odds)
                 
             # Ensure we have data for all dogs in the race
             dogs_available = sum(1 for dog_id in race.dog_ids.values() 
@@ -126,7 +399,9 @@ class GreyhoundDataset(Dataset):
         self.category_encoder = encoders['category_encoder']
         self.trainer_encoder = encoders['trainer_encoder']
         self.going_encoder = encoders['going_encoder']
-        self.commentary_encoder = encoders['commentary_encoder']
+        
+        # Load commentary vocabulary mapping (this is the key fix!)
+        self.commentary_vocab = encoders['commentary_encoder']
         
         # Store vocabulary sizes
         self.vocab_sizes = vocab_sizes.copy()
@@ -134,91 +409,97 @@ class GreyhoundDataset(Dataset):
         logger.info("Loaded pre-built encoders:")
         for name, size in vocab_sizes.items():
             logger.info(f"  - {name}: {size}")
+        
+        # Verify commentary_vocab was loaded correctly
+        if hasattr(self, 'commentary_vocab') and self.commentary_vocab:
+            logger.info(f"Commentary vocabulary loaded: {len(self.commentary_vocab)} words")
     
     def _build_encoders(self):
-        """Build label encoders for categorical features"""
+        """Build label encoders for categorical features using multithreading"""
         
-        print(f"Building encoders from {len(self.races)} races...")
+        print(f"Building encoders from {len(self.races)} races using multithreading...")
         
-        # Collect all unique values
-        tracks = set()
-        classes = set()
-        categories = set()
-        trainers = set()
-        going_conditions = set()
-        commentary_vocab = set()
+        # Split races into batches for parallel processing
+        num_workers = min(mp.cpu_count(), 8)  # Limit to 8 cores max
+        batch_size = max(1, len(self.races) // (num_workers * 4))  # Create more batches than workers
         
-        # Process races in batches for better memory management with progress bar
-        batch_size = 1000
-        with tqdm(total=len(self.races), desc="Processing races for vocabulary", unit="races") as pbar:
-            for i in range(0, len(self.races), batch_size):
-                batch_races = self.races[i:i + batch_size]
-                
-                for race in batch_races:
-                    tracks.add(race.track_name)
-                    classes.add(race.race_class or 'Unknown')
-                    categories.add(race.category or 'Unknown')
+        race_batches = []
+        for i in range(0, len(self.races), batch_size):
+            batch = self.races[i:i + batch_size]
+            race_batches.append((batch, self.dog_lookup))
+        
+        print(f"Processing {len(race_batches)} batches with {num_workers} workers...")
+        
+        # Initialize combined vocabulary sets
+        all_tracks = set()
+        all_classes = set()
+        all_categories = set()
+        all_trainers = set()
+        all_going_conditions = set()
+        all_commentary_vocab = set()
+        
+        # Process batches in parallel using ThreadPoolExecutor (better for I/O bound tasks)
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            futures = [executor.submit(process_race_batch_for_vocab, batch) for batch in race_batches]
+            
+            # Collect results with progress bar
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing race batches"):
+                try:
+                    result = future.result()
                     
-                    # Get dog information for this race only
-                    for dog_id in race.dog_ids.values():
-                        if dog_id in self.dog_lookup:
-                            dog = self.dog_lookup[dog_id]
-                            if dog.trainer:
-                                trainers.add(dog.trainer)
-                            
-                            # Only sample recent historical races for vocabulary building
-                            # to avoid processing entire history for every dog
-                            race_datetime = datetime.combine(race.race_date, race.race_time)
-                            recent_participations = dog.get_last_n_races_before(race_datetime, 5)  # Only last 5 races
-                            
-                            for participation in recent_participations:
-                                if participation.going:
-                                    going_conditions.add(participation.going)
-                                
-                                # Extract commentary vocabulary (limit to avoid memory issues)
-                                for tag in participation.commentary_tags[:3]:  # Only first 3 tags
-                                    words = re.findall(r'\b\w+\b', tag.lower())
-                                    commentary_vocab.update(words[:10])  # Only first 10 words per tag
+                    # Merge vocabulary sets
+                    all_tracks.update(result['tracks'])
+                    all_classes.update(result['classes'])
+                    all_categories.update(result['categories'])
+                    all_trainers.update(result['trainers'])
+                    all_going_conditions.update(result['going_conditions'])
+                    all_commentary_vocab.update(result['commentary_vocab'])
                     
-                    # Add race commentary (also limited)
-                    for tags in race.commentary_tags.values():
-                        for tag in tags[:3]:  # Only first 3 tags
-                            words = re.findall(r'\b\w+\b', tag.lower())
-                            commentary_vocab.update(words[:10])  # Only first 10 words per tag
-                
-                pbar.update(len(batch_races))
+                except Exception as e:
+                    logger.warning(f"Error processing batch: {e}")
+        
+        logger.info(f"Vocabulary sizes:")
+        logger.info(f"  - Tracks: {len(all_tracks)}")
+        logger.info(f"  - Classes: {len(all_classes)}")
+        logger.info(f"  - Categories: {len(all_categories)}")
+        logger.info(f"  - Trainers: {len(all_trainers)}")
+        logger.info(f"  - Going conditions: {len(all_going_conditions)}")
+        logger.info(f"  - Commentary vocabulary: {len(all_commentary_vocab)}")
         
         # Build encoders
+        print("Building label encoders...")
+        
         self.track_encoder = LabelEncoder()
-        self.track_encoder.fit(list(tracks) + ['Unknown'])
+        self.track_encoder.fit(list(all_tracks) + ['Unknown'])
         
         self.class_encoder = LabelEncoder()
-        self.class_encoder.fit(list(classes) + ['Unknown'])
+        self.class_encoder.fit(list(all_classes) + ['Unknown'])
         
         self.category_encoder = LabelEncoder()
-        self.category_encoder.fit(list(categories) + ['Unknown'])
+        self.category_encoder.fit(list(all_categories) + ['Unknown'])
         
         self.trainer_encoder = LabelEncoder()
-        self.trainer_encoder.fit(list(trainers) + ['Unknown'])
+        self.trainer_encoder.fit(list(all_trainers) + ['Unknown'])
         
         self.going_encoder = LabelEncoder()
-        self.going_encoder.fit(list(going_conditions) + ['Unknown'])
+        self.going_encoder.fit(list(all_going_conditions) + ['Unknown'])
         
-        # Commentary vocabulary (add special tokens)
-        commentary_list = list(commentary_vocab) + ['<PAD>', '<UNK>']
-        self.commentary_vocab = {word: idx for idx, word in enumerate(commentary_list)}
+        # Build commentary vocabulary mapping
+        commentary_vocab_list = ['<PAD>', '<UNK>'] + sorted(list(all_commentary_vocab))
+        self.commentary_vocab = {word: idx for idx, word in enumerate(commentary_vocab_list)}
         
-        # Store sizes for model initialization
+        # Store vocabulary sizes
         self.vocab_sizes = {
             'num_tracks': len(self.track_encoder.classes_),
             'num_classes': len(self.class_encoder.classes_),
             'num_categories': len(self.category_encoder.classes_),
             'num_trainers': len(self.trainer_encoder.classes_),
             'num_going_conditions': len(self.going_encoder.classes_),
-            'commentary_vocab_size': len(self.commentary_vocab)
+            'commentary_vocab_size': len(commentary_vocab_list)
         }
         
-        logger.info(f"Vocabulary sizes: {self.vocab_sizes}")
+        logger.info("✅ Encoders built successfully with multithreading")
     
     def __len__(self):
         return len(self.races)
@@ -335,9 +616,13 @@ class GreyhoundDataset(Dataset):
             win_label = 1.0 if race.race_times.get(trap_num) and self._is_winner(race, trap_num) else 0.0
             dogs_data['win_labels'].append(win_label)
             
-            # Market odds (use 1.0 if missing - will be masked anyway)
-            market_odds = race.odds.get(trap_num, 1.0) if race.odds else 1.0
-            dogs_data['market_odds'].append(market_odds)
+            # Market odds (ensure we have valid odds - should be guaranteed by race filtering)
+            market_odds = race.odds.get(trap_num) if race.odds else None
+            if market_odds is None or market_odds <= 0:
+                # Fallback to default odds if missing (should not happen with proper filtering)
+                market_odds = 5.0
+                logger.warning(f"Missing or invalid odds for race {race.race_id}, trap {trap_num}")
+            dogs_data['market_odds'].append(float(market_odds))
         
         return dogs_data
     
@@ -429,7 +714,7 @@ class GreyhoundDataset(Dataset):
             
             # Pad labels and odds
             dogs_data['win_labels'].append(0.0)
-            dogs_data['market_odds'].append(1.0)
+            dogs_data['market_odds'].append(5.0)  # Default odds for padding
         
         # Truncate if too many dogs
         for key in dogs_data:
@@ -526,7 +811,7 @@ class GreyhoundDataset(Dataset):
 
 def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, Dog]) -> Tuple[Dict, Dict]:
     """
-    Build encoders on the full dataset (training + validation combined)
+    Build encoders on the full dataset (training + validation combined) using multiprocessing
     This ensures consistent encoding across all data splits.
     
     Args:
@@ -536,10 +821,37 @@ def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, 
     Returns:
         Tuple of (encoders_dict, vocab_sizes_dict)
     """
+    from multiprocessing import Pool, cpu_count
+    import math
     
-    logger.info(f"Building encoders on full dataset ({len(all_races)} races)...")
+    logger.info(f"Building encoders on full dataset ({len(all_races)} races) using multiprocessing...")
     
-    # Collect all unique values from the complete dataset
+    # Determine optimal number of processes
+    num_processes = min(cpu_count(), 8)  # Cap at 8 to avoid memory issues
+    batch_size = math.ceil(len(all_races) / num_processes)
+    
+    logger.info(f"Using {num_processes} processes with batch size {batch_size}")
+    
+    # Prepare batches for multiprocessing
+    race_batches = []
+    for i in range(0, len(all_races), batch_size):
+        batch = all_races[i:i + batch_size]
+        race_batches.append((batch, dog_lookup))
+    
+    # Process batches in parallel
+    logger.info("Processing vocabulary extraction in parallel...")
+    
+    with Pool(processes=num_processes) as pool:
+        # Use map to process all batches
+        results = list(tqdm(
+            pool.imap(process_race_batch_for_vocab, race_batches),
+            total=len(race_batches),
+            desc="Processing vocabulary batches",
+            unit="batches"
+        ))
+    
+    # Combine results from all processes
+    logger.info("Combining vocabulary results...")
     tracks = set()
     classes = set()
     categories = set()
@@ -547,42 +859,13 @@ def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, 
     going_conditions = set()
     commentary_vocab = set()
     
-    # Process all races with progress bar
-    with tqdm(total=len(all_races), desc="Processing races for full vocabulary", unit="races") as pbar:
-        for race in all_races:
-            tracks.add(race.track_name)
-            classes.add(race.race_class or 'Unknown')
-            categories.add(race.category or 'Unknown')
-            
-            # Get dog information for this race
-            for dog_id in race.dog_ids.values():
-                if dog_id in dog_lookup:
-                    dog = dog_lookup[dog_id]
-                    if dog.trainer:
-                        trainers.add(dog.trainer)
-                    
-                    # Process all historical races (not limited for encoder building)
-                    race_datetime = datetime.combine(race.race_date, race.race_time)
-                    
-                    # Get more historical data for complete vocabulary
-                    historical_participations = dog.get_last_n_races_before(race_datetime, 20)  # More history for vocab
-                    
-                    for participation in historical_participations:
-                        if participation.going:
-                            going_conditions.add(participation.going)
-                        
-                        # Extract commentary vocabulary
-                        for tag in participation.commentary_tags:
-                            words = re.findall(r'\b\w+\b', tag.lower())
-                            commentary_vocab.update(words)
-            
-            # Add race commentary
-            for tags in race.commentary_tags.values():
-                for tag in tags:
-                    words = re.findall(r'\b\w+\b', tag.lower())
-                    commentary_vocab.update(words)
-            
-            pbar.update(1)
+    for result in results:
+        tracks.update(result['tracks'])
+        classes.update(result['classes'])
+        categories.update(result['categories'])
+        trainers.update(result['trainers'])
+        going_conditions.update(result['going_conditions'])
+        commentary_vocab.update(result['commentary_vocab'])
     
     logger.info(f"Vocabulary sizes:")
     logger.info(f"  - Tracks: {len(tracks)}")
@@ -593,7 +876,7 @@ def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, 
     logger.info(f"  - Commentary vocabulary: {len(commentary_vocab)}")
     
     # Build encoders
-    print("Building label encoders...")
+    logger.info("Building label encoders...")
     
     track_encoder = LabelEncoder()
     track_encoder.fit(list(tracks) + ['Unknown'])
@@ -634,7 +917,7 @@ def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, 
         'commentary_vocab_size': len(commentary_vocab_list)
     }
     
-    logger.info("✅ Full dataset encoders built successfully")
+    logger.info("Encoders built successfully with multiprocessing")
     
     return encoders, vocab_sizes
 

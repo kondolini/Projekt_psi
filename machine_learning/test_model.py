@@ -10,8 +10,11 @@ import sys
 import torch
 import numpy as np
 
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, parent_dir)
+# Add parent directory for imports - make it more robust
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 from machine_learning.model import GreyhoundRacingModel
 from machine_learning.loss import GreyhoundBettingLoss, hard_betting_evaluation
@@ -50,6 +53,16 @@ def test_model_forward():
     )
     
     print(f"✅ Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    
+    # Detailed parameter breakdown
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    model_size_mb = total_params * 4 / 1024 / 1024  # 32-bit floats
+    
+    print(f"🏗️  MODEL DETAILS:")
+    print(f"   - Total parameters: {total_params:,}")
+    print(f"   - Trainable parameters: {trainable_params:,}")
+    print(f"   - Model size: {model_size_mb:.1f} MB")
     
     # Create dummy batch
     batch_size = 4
