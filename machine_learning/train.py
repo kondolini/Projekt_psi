@@ -1,613 +1,428 @@
+#!/usr/bin/env python3
 """
-Training script for Greyhound Racing Model V1
+Greyhound Racing Model Training Script
+
+This script trains a neural network model for greyhound racing predictions
+with a focus on betting profitability.
+
+Features:
+- Graceful stopping and resuming from checkpoints
+- GPU support with automatic detection
+- Progress tracking and comprehensive logging
+- PnL monitoring and betting simulation
+- Temperature annealing for improved convergence
+- Data quality checks and validation
+- Configurable hyperparameters via command line
+
+Usage:
+    python train.py --epochs 100 --batch_size 32 --learning_rate 0.001
+    python train.py --resume checkpoints/interrupted_checkpoint.pth
+    python train.py --from_checkpoint checkpoints/best_model.pth --epochs 50
 """
 
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import pickle
 import os
 import sys
-from datetime import datetime, date
-from typing import Dict, List, Tuple, Optional
 import argparse
-from collections import defaultdict
-from tqdm import tqdm
+import logging
+import torch
+from datetime import date, datetime
+from typing import Optional
 
-# Add parent directory to path
+# Add parent directory for imports
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, parent_dir)
 
-from models.race import Race
-from models.dog import Dog
-from machine_learning.data_processor import RaceDataProcessor, create_dataset
-from machine_learning.model import GreyhoundRacingModel, BettingLoss, collate_race_batch
+# Import our modules
+from machine_learning.model import GreyhoundRacingModel
+from machine_learning.dataset import (
+    load_data_from_buckets, 
+    create_train_val_split, 
+    GreyhoundDataset, 
+    create_dataloaders
+)
+from machine_learning.trainer import create_trainer
+from machine_learning.utils import (
+    setup_logging, 
+    print_gpu_info, 
+    print_model_info, 
+    print_data_summary,
+    set_random_seeds, 
+    create_run_name, 
+    save_run_config,
+    save_encoders,
+    create_directory_structure,
+    cleanup_old_checkpoints
+)
+
+logger = logging.getLogger(__name__)
 
 
-class RaceDataset(Dataset):
-    """PyTorch Dataset for race data"""
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Train Greyhound Racing Prediction Model')
     
-    def __init__(self, samples: List[Dict]):
-        self.samples = samples
+    # Data arguments
+    parser.add_argument('--data_dir', type=str, default='data',
+                       help='Root directory containing data')
+    parser.add_argument('--dogs_enhanced_dir', type=str, default=None,
+                       help='Directory containing enhanced dog buckets')
+    parser.add_argument('--races_dir', type=str, default=None,
+                       help='Directory containing race buckets')
+    parser.add_argument('--unified_dir', type=str, default=None,
+                       help='Directory containing unified indices')
     
-    def __len__(self):
-        return len(self.samples)
+    # Training arguments
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                       help='Batch size for training')
+    parser.add_argument('--learning_rate', type=float, default=1e-3,
+                       help='Learning rate for optimizer')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                       help='Weight decay for regularization')
     
-    def __getitem__(self, idx):
-        return self.samples[idx]
+    # Model hyperparameters
+    parser.add_argument('--embedding_dim', type=int, default=32,
+                       help='Embedding dimension')
+    parser.add_argument('--hidden_dim', type=int, default=64,
+                       help='Hidden layer dimension')
+    parser.add_argument('--rnn_hidden_dim', type=int, default=32,
+                       help='RNN hidden dimension')
+    parser.add_argument('--dropout_rate', type=float, default=0.2,
+                       help='Dropout rate')
+    parser.add_argument('--max_history_length', type=int, default=10,
+                       help='Maximum number of historical races per dog')
+    parser.add_argument('--max_commentary_length', type=int, default=5,
+                       help='Maximum number of commentary tags per race')
+    parser.add_argument('--max_dogs_per_race', type=int, default=8,
+                       help='Maximum number of dogs per race')
+    
+    # Loss function parameters
+    parser.add_argument('--alpha', type=float, default=1.0,
+                       help='Confidence multiplier for betting')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                       help='Initial temperature for soft betting selection')
+    parser.add_argument('--commission', type=float, default=0.05,
+                       help='Betting commission rate')
+    parser.add_argument('--profit_weight', type=float, default=0.7,
+                       help='Weight for profit loss component')
+    parser.add_argument('--accuracy_weight', type=float, default=0.3,
+                       help='Weight for accuracy loss component')
+    parser.add_argument('--min_expected_profit', type=float, default=0.0,
+                       help='Minimum expected profit threshold for betting')
+    
+    # Data split arguments
+    parser.add_argument('--val_start_date', type=str, default='2023-01-01',
+                       help='Start date for validation set (YYYY-MM-DD)')
+    parser.add_argument('--val_end_date', type=str, default=None,
+                       help='End date for validation set (YYYY-MM-DD)')
+    parser.add_argument('--exclude_trial_races', action='store_true',
+                       help='Exclude races without odds (trial races)')
+    
+    # Training control
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Resume training from checkpoint file')
+    parser.add_argument('--from_checkpoint', type=str, default=None,
+                       help='Load model from checkpoint but start fresh training')
+    parser.add_argument('--save_every', type=int, default=5,
+                       help='Save checkpoint every N epochs')
+    parser.add_argument('--eval_every', type=int, default=1,
+                       help='Evaluate on validation set every N epochs')
+    parser.add_argument('--early_stopping_patience', type=int, default=20,
+                       help='Early stopping patience (epochs)')
+    
+    # System arguments
+    parser.add_argument('--device', type=str, default='auto',
+                       help='Device to use: auto, cpu, cuda, cuda:0, etc.')
+    parser.add_argument('--num_workers', type=int, default=0,
+                       help='Number of data loader workers')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
+    
+    # Output arguments
+    parser.add_argument('--output_dir', type=str, default='machine_learning/outputs',
+                       help='Output directory for checkpoints and logs')
+    parser.add_argument('--run_name', type=str, default=None,
+                       help='Name for this training run')
+    parser.add_argument('--log_level', type=str, default='INFO',
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='Logging level')
+    
+    # Optimization flags
+    parser.add_argument('--no_temperature_annealing', action='store_true',
+                       help='Disable temperature annealing during training')
+    parser.add_argument('--cleanup_checkpoints', action='store_true',
+                       help='Clean up old checkpoint files')
+    
+    return parser.parse_args()
 
 
-def load_data(data_dir: str, test_split_date: str = "2023-01-01") -> Tuple[Dict[str, Dog], List[Race], List[Race]]:
-    """
-    Load dogs and races, split into train/test by date
-    """
-    print("Loading dogs...")
-    dogs = {}
-    dogs_dir = os.path.join(data_dir, "dogs_enhanced")
+def setup_directories_and_logging(args):
+    """Setup output directories and logging"""
     
-    if not os.path.exists(dogs_dir):
-        raise FileNotFoundError(f"Dogs directory not found: {dogs_dir}")
+    # Create run name if not provided
+    if args.run_name is None:
+        args.run_name = create_run_name()
     
-    for fname in os.listdir(dogs_dir):
-        if fname.endswith('.pkl'):
-            with open(os.path.join(dogs_dir, fname), 'rb') as f:
-                bucket = pickle.load(f)
-                for dog_id, dog_obj in bucket.items():
-                    if isinstance(dog_obj, Dog):
-                        dogs[dog_id] = dog_obj
+    # Create output directory structure
+    run_dir = os.path.join(args.output_dir, args.run_name)
+    directories = create_directory_structure(run_dir)
     
-    print(f"Loaded {len(dogs)} dogs")
+    # Setup logging
+    log_file = os.path.join(directories['logs'], 'training.log')
+    setup_logging(args.log_level, log_file)
     
-    # Load pre-built race objects from buckets
-    print("Loading pre-built race objects...")
-    races_dir = os.path.join(data_dir, "races")
-    all_races = []
+    logger.info(f"Starting training run: {args.run_name}")
+    logger.info(f"Output directory: {run_dir}")
     
-    if not os.path.exists(races_dir):
-        raise FileNotFoundError(f"Races directory not found: {races_dir}")
-    
-    # Load all race buckets
-    for fname in os.listdir(races_dir):
-        if fname.startswith('races_bucket_') and fname.endswith('.pkl'):
-            bucket_path = os.path.join(races_dir, fname)
-            try:
-                with open(bucket_path, 'rb') as f:
-                    races_bucket = pickle.load(f)
-                
-                for storage_key, race in races_bucket.items():
-                    if isinstance(race, Race) and len(race.dog_ids) >= 3:  # At least 3 dogs
-                        all_races.append(race)
-                        
-            except Exception as e:
-                print(f"Error loading race bucket {fname}: {e}")
-                continue
-    
-    print(f"Loaded {len(all_races)} race objects from buckets")
-    
-    # Sort races chronologically
-    all_races.sort(key=lambda r: r.get_race_datetime())
-    
-    # Split by date
-    split_date = datetime.strptime(test_split_date, "%Y-%m-%d").date()
-    train_races = [r for r in all_races if r.race_date < split_date]
-    test_races = [r for r in all_races if r.race_date >= split_date]
-    
-    print(f"Split: {len(train_races)} train races, {len(test_races)} test races")
-    
-    return dogs, train_races, test_races
+    return directories
 
 
-def load_checkpoint_for_resume(checkpoint_path: str, model: GreyhoundRacingModel, 
-                              optimizer: torch.optim.Optimizer, 
-                              scheduler: torch.optim.lr_scheduler._LRScheduler,
-                              device: torch.device) -> Tuple[int, float]:
-    """
-    Load a checkpoint to resume training
+def setup_device(args):
+    """Setup and validate device"""
     
-    Args:
-        checkpoint_path: Path to the checkpoint file
-        model: Model to load state into
-        optimizer: Optimizer to load state into
-        scheduler: Scheduler to load state into  
-        device: Device to load on
-        
-    Returns:
-        Tuple of (start_epoch, best_val_profit)
-    """
-    print(f"Loading checkpoint from: {checkpoint_path}")
+    if args.device == 'auto':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(args.device)
     
-    # Load using the model's load_model method
-    _, optimizer_state, scheduler_state, metadata = model.load_model(
-        checkpoint_path, 
-        device=str(device), 
-        load_optimizer=True, 
-        load_scheduler=True
-    )
+    logger.info(f"Using device: {device}")
     
-    # Restore optimizer and scheduler states
-    if optimizer_state is not None:
-        optimizer.load_state_dict(optimizer_state)
-        print("Optimizer state restored")
-    
-    if scheduler_state is not None:
-        scheduler.load_state_dict(scheduler_state)
-        print("Scheduler state restored")
-    
-    start_epoch = metadata.get('epoch', 0) + 1  # Start from next epoch
-    best_val_profit = metadata.get('metrics', {}).get('val_profit', float('-inf'))
-    
-    print(f"Resuming from epoch {start_epoch}, best val profit: {best_val_profit:.4f}")
-    
-    return start_epoch, best_val_profit
-
-
-def train_model(
-    model: GreyhoundRacingModel,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    train_criterion: BettingLoss,
-    val_criterion: BettingLoss,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler,
-    num_epochs: int,
-    device: torch.device,
-    save_dir: str,
-    start_epoch: int = 0,
-    best_val_profit: float = float('-inf')
-):
-    """Training loop with GPU memory monitoring and progress bars"""
-    
-    train_losses = []
-    val_losses = []
-    
-    # GPU memory tracking
+    # Print GPU info if using CUDA
     if device.type == 'cuda':
-        print(f"Initial GPU memory: {torch.cuda.memory_allocated(device) / 1024**2:.1f} MB")
+        gpu_available = print_gpu_info()
+        if not gpu_available:
+            logger.warning("GPU requested but not available, falling back to CPU")
+            device = torch.device('cpu')
+    else:
+        logger.info("Using CPU for training")
     
-    # Main training loop with progress bar
-    for epoch in tqdm(range(start_epoch, num_epochs), desc="Training Progress", initial=start_epoch, total=num_epochs):
-        # Reset balance tracking for this epoch
-        train_criterion.reset_balance()
-        val_criterion.reset_balance()
-        
-        # Training phase
-        model.train()
-        train_loss = 0.0
-        train_metrics = defaultdict(float)
-        num_train_batches = 0
-        
-        # Training loop with progress bar
-        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
-        
-        for batch_idx, batch in enumerate(train_pbar):
-            # Move to device
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device, non_blocking=True)
-            
-            # Forward pass
-            optimizer.zero_grad()
-            predictions = model(batch)
-            
-            # Extract targets and market odds from the batch
-            targets = batch["targets"]  # [batch_size, 6]
-            market_odds = batch["market_odds"]  # [batch_size, 6] - real market odds from data
-            
-            # Calculate loss using real market odds
-            loss, metrics = train_criterion(predictions, targets, market_odds)
-            
-            # Backward pass
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            
-            # Accumulate metrics
-            train_loss += loss.item()
-            for key, value in metrics.items():
-                train_metrics[key] += value
-            num_train_batches += 1
-            
-            # Update progress bar with PPB
-            train_pbar.set_postfix({
-                'PPB': f'{metrics.get("ppb", 0):.4f}',
-                'Loss': f'{loss.item():.4f}',
-                'Balance': f'{metrics.get("total_balance", 1000):.0f}'
-            })
-            
-            # GPU memory management
-            if device.type == 'cuda' and batch_idx % 100 == 0:
-                torch.cuda.empty_cache()
-        
-        # Average training metrics
-        train_loss /= num_train_batches
-        for key in train_metrics:
-            train_metrics[key] /= num_train_batches
-        
-        # Validation phase
-        model.eval()
-        val_loss = 0.0
-        val_metrics = defaultdict(float)
-        num_val_batches = 0
-        
-        # Validation loop with progress bar
-        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
-        
-        with torch.no_grad():
-            for batch in val_pbar:
-                # Move to device
-                for key in batch:
-                    if isinstance(batch[key], torch.Tensor):
-                        batch[key] = batch[key].to(device, non_blocking=True)
-                
-                # Forward pass
-                predictions = model(batch)
-                targets = batch["targets"]
-                market_odds = batch["market_odds"]  # Use real market odds from data
-                
-                loss, metrics = val_criterion(predictions, targets, market_odds)
-                
-                val_loss += loss.item()
-                for key, value in metrics.items():
-                    val_metrics[key] += value
-                num_val_batches += 1
-                
-                # Update progress bar
-                val_pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
-        
-        # Average validation metrics
-        if num_val_batches > 0:
-            val_loss /= num_val_batches
-            for key in val_metrics:
-                val_metrics[key] /= num_val_batches
-        
-        # Learning rate scheduling
-        if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            # For plateau scheduler, step with validation metric
-            scheduler.step(val_metrics.get('ppb', 0))
-        else:
-            # For other schedulers, step without arguments
-            scheduler.step()
-        
-        # Logging with PPB as main metric
-        tqdm.write(f"\n📊 Epoch {epoch + 1}/{num_epochs} Results:")
-        tqdm.write(f"   💰 Train PPB: {train_metrics.get('ppb', 0):.6f}, Val PPB: {val_metrics.get('ppb', 0):.6f}")
-        tqdm.write(f"   💵 Train Balance: {train_metrics.get('total_balance', 1000):.2f}, Val Balance: {val_metrics.get('total_balance', 1000):.2f}")
-        tqdm.write(f"   📈 Train ROI: {train_metrics['roi']:.4f}, Val ROI: {val_metrics['roi']:.4f}")
-        tqdm.write(f"   🎯 Train Hit Rate: {train_metrics['hit_rate']:.4f}, Val Hit Rate: {val_metrics['hit_rate']:.4f}")
-        tqdm.write(f"   🎰 Train Bets: {train_metrics.get('num_bets', 0)}, Val Bets: {val_metrics.get('num_bets', 0)}")
-        tqdm.write(f"   🏁 Complete Races: Train {train_metrics.get('num_complete_races', 0)}, Val {val_metrics.get('num_complete_races', 0)}")
-        tqdm.write(f"   ⚠️  Incomplete Races: Train {train_metrics.get('num_incomplete_races', 0)}, Val {val_metrics.get('num_incomplete_races', 0)}")
-        tqdm.write(f"   💸 Bet %: {train_metrics.get('bet_percentage', 0.02)*100:.1f}%, Alpha: {train_metrics.get('current_alpha', 1.1):.3f}")
-        tqdm.write(f"   📊 Recent Hit Rate: Train {train_metrics.get('recent_hit_rate', 0):.3f}, Val {val_metrics.get('recent_hit_rate', 0):.3f}")
-        
-        # Save model after every epoch
-        epoch_metrics = {
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_ppb': train_metrics.get('ppb', 0),
-            'val_ppb': val_metrics.get('ppb', 0),
-            'train_balance': train_metrics.get('total_balance', 1000),
-            'val_balance': val_metrics.get('total_balance', 1000),
-            'val_profit': val_metrics['actual_profit'],
-            'train_profit': train_metrics['actual_profit'],
-            'val_roi': val_metrics['roi'],
-            'train_roi': train_metrics['roi'],
-            'val_hit_rate': val_metrics['hit_rate'],
-            'train_hit_rate': train_metrics['hit_rate']
-        }
-        
-        # Save current epoch checkpoint
-        model.save_model(
-            save_path=os.path.join(save_dir, f'epoch_{epoch+1}.pth'),
-            epoch=epoch,
-            optimizer_state=optimizer.state_dict(),
-            scheduler_state=scheduler.state_dict(),
-            metrics=epoch_metrics
-        )
-        
-        # Save best model
-        if val_metrics['actual_profit'] > best_val_profit:
-            best_val_profit = val_metrics['actual_profit']
-            
-            model.save_model(
-                save_path=os.path.join(save_dir, 'best_model.pth'),
-                epoch=epoch,
-                optimizer_state=optimizer.state_dict(),
-                scheduler_state=scheduler.state_dict(),
-                metrics=epoch_metrics
-            )
-            tqdm.write(f"   💾 Saved new best model with val profit: {best_val_profit:.4f}")
-        
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+    return device
+
+
+def load_and_prepare_data(args):
+    """Load and prepare data for training"""
     
-    # Save final model
-    final_metrics = {
-        'train_loss': train_losses[-1] if train_losses else 0,
-        'val_loss': val_losses[-1] if val_losses else 0,
-        'final_epoch': num_epochs - 1
-    }
+    logger.info("Loading data from buckets...")
     
-    model.save_model(
-        save_path=os.path.join(save_dir, 'final_model.pth'),
-        epoch=num_epochs - 1,
-        optimizer_state=optimizer.state_dict(),
-        scheduler_state=scheduler.state_dict(),
-        metrics=final_metrics
+    # Setup data directories
+    data_dir = args.data_dir
+    dogs_enhanced_dir = args.dogs_enhanced_dir or os.path.join(data_dir, 'dogs_enhanced')
+    races_dir = args.races_dir or os.path.join(data_dir, 'races')
+    unified_dir = args.unified_dir or os.path.join(data_dir, 'unified')
+    
+    # Validate directories exist
+    for dir_path, name in [(dogs_enhanced_dir, 'dogs_enhanced'), 
+                          (races_dir, 'races'), 
+                          (unified_dir, 'unified')]:
+        if not os.path.exists(dir_path):
+            raise FileNotFoundError(f"Directory not found: {dir_path} ({name})")
+    
+    # Load data
+    dog_lookup, races = load_data_from_buckets(dogs_enhanced_dir, races_dir, unified_dir)
+    
+    # Create train/validation split
+    val_start_date = datetime.strptime(args.val_start_date, '%Y-%m-%d').date()
+    val_end_date = None
+    if args.val_end_date:
+        val_end_date = datetime.strptime(args.val_end_date, '%Y-%m-%d').date()
+    
+    train_races, val_races = create_train_val_split(races, val_start_date, val_end_date)
+    
+    # Create datasets
+    logger.info("Creating datasets...")
+    
+    # We'll use empty track_lookup for now - could be enhanced later
+    track_lookup = {}
+    
+    train_dataset = GreyhoundDataset(
+        races=train_races,
+        dog_lookup=dog_lookup,
+        track_lookup=track_lookup,
+        max_dogs_per_race=args.max_dogs_per_race,
+        max_history_length=args.max_history_length,
+        max_commentary_length=args.max_commentary_length,
+        exclude_trial_races=args.exclude_trial_races
     )
     
-    tqdm.write(f"\n🎯 Training completed! Final model saved.")
+    val_dataset = GreyhoundDataset(
+        races=val_races,
+        dog_lookup=dog_lookup,
+        track_lookup=track_lookup,
+        max_dogs_per_race=args.max_dogs_per_race,
+        max_history_length=args.max_history_length,
+        max_commentary_length=args.max_commentary_length,
+        exclude_trial_races=args.exclude_trial_races
+    )
     
-    return train_losses, val_losses
+    # Use same encoders for validation set
+    val_dataset.track_encoder = train_dataset.track_encoder
+    val_dataset.class_encoder = train_dataset.class_encoder
+    val_dataset.category_encoder = train_dataset.category_encoder
+    val_dataset.trainer_encoder = train_dataset.trainer_encoder
+    val_dataset.going_encoder = train_dataset.going_encoder
+    val_dataset.commentary_vocab = train_dataset.commentary_vocab
+    val_dataset.vocab_sizes = train_dataset.vocab_sizes
+    
+    # Print data summary
+    print_data_summary(train_dataset, val_dataset)
+    
+    # Create data loaders
+    train_loader, val_loader = create_dataloaders(
+        train_dataset, 
+        val_dataset, 
+        batch_size=args.batch_size,
+        num_workers=args.num_workers
+    )
+    
+    logger.info(f"Created data loaders - Train: {len(train_loader)} batches, Val: {len(val_loader)} batches")
+    
+    return train_dataset, val_dataset, train_loader, val_loader
 
 
-def find_best_model(output_dir: str) -> Optional[str]:
-    """
-    Find the best model checkpoint in the output directory
+def create_model(args, vocab_sizes):
+    """Create and initialize model"""
     
-    Args:
-        output_dir: Directory to search for model checkpoints
+    logger.info("Creating model...")
+    
+    model = GreyhoundRacingModel(
+        num_tracks=vocab_sizes['num_tracks'],
+        num_classes=vocab_sizes['num_classes'],
+        num_categories=vocab_sizes['num_categories'],
+        num_trainers=vocab_sizes['num_trainers'],
+        num_going_conditions=vocab_sizes['num_going_conditions'],
+        commentary_vocab_size=vocab_sizes['commentary_vocab_size'],
+        embedding_dim=args.embedding_dim,
+        hidden_dim=args.hidden_dim,
+        rnn_hidden_dim=args.rnn_hidden_dim,
+        max_history_length=args.max_history_length,
+        max_commentary_length=args.max_commentary_length,
+        dropout_rate=args.dropout_rate,
+        max_dogs_per_race=args.max_dogs_per_race
+    )
+    
+    # Print model information
+    print_model_info(model)
+    
+    return model
+
+
+def load_from_checkpoint_if_specified(args, model, device):
+    """Load model from checkpoint if specified"""
+    
+    if args.from_checkpoint and os.path.exists(args.from_checkpoint):
+        logger.info(f"Loading model from checkpoint: {args.from_checkpoint}")
         
-    Returns:
-        Path to best model checkpoint or None if none found
-    """
-    if not os.path.exists(output_dir):
-        return None
+        checkpoint = torch.load(args.from_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
         
-    # Look for model checkpoints
-    checkpoints = []
-    for filename in os.listdir(output_dir):
-        if filename.startswith('epoch_') and filename.endswith('.pth'):
-            # Extract epoch number
-            try:
-                epoch_str = filename.replace('epoch_', '').replace('.pth', '')
-                epoch = int(epoch_str)
-                checkpoint_path = os.path.join(output_dir, filename)
-                checkpoints.append((epoch, checkpoint_path))
-            except ValueError:
-                continue
+        logger.info("Model loaded successfully")
     
-    # Also check for best_model.pth
-    best_model_path = os.path.join(output_dir, 'best_model.pth')
-    if os.path.exists(best_model_path):
-        return best_model_path
-    
-    # Return the latest epoch checkpoint
-    if checkpoints:
-        checkpoints.sort(key=lambda x: x[0], reverse=True)
-        return checkpoints[0][1]
-    
-    return None
+    return model
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train Greyhound Racing Model')
-    parser.add_argument('--data_dir', type=str, default='data', help='Data directory')
-    parser.add_argument('--output_dir', type=str, default='machine_learning/outputs', help='Output directory')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--test_split', type=str, default='2023-01-01', help='Test split date')
-    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from (e.g., outputs/epoch_10.pth)')
-    parser.add_argument('--force_rebuild', action='store_true', help='Force rebuild of cached datasets')
-    parser.add_argument('--force_new_model', action='store_true', help='Force creation of new model instead of loading best existing model')
-    parser.add_argument('--lr_scheduler', type=str, default='cosine', choices=['cosine', 'plateau', 'step'], help='Learning rate scheduler type')
+    """Main training function"""
     
-    args = parser.parse_args()
+    # Parse arguments
+    args = parse_arguments()
     
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    # Setup directories and logging
+    directories = setup_directories_and_logging(args)
     
-    # Set device with detailed GPU info
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    # Set random seeds for reproducibility
+    set_random_seeds(args.seed)
     
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-        print(f"CUDA Version: {torch.version.cuda}")
-        
-        # Set optimal GPU settings
-        torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
-        torch.backends.cudnn.deterministic = False  # Allow non-deterministic algorithms for speed
-        
-        # Clear GPU cache
-        torch.cuda.empty_cache()
-        
-        # Enable mixed precision if supported
-        if hasattr(torch.cuda, 'amp'):
-            print("Mixed precision training available")
-        
-    else:
-        print("⚠️  WARNING: CUDA not available. Training will be much slower on CPU.")
-        print("   Make sure you have:")
-        print("   1. NVIDIA GPU with CUDA support")
-        print("   2. PyTorch with CUDA support installed")
-        print("   3. Compatible CUDA drivers")
+    # Setup device
+    device = setup_device(args)
     
-    print("\n" + "="*60)
-    print("🏁 GREYHOUND RACING MODEL TRAINING")
-    print("="*60)
-    
-    # Load data
-    print("📁 Loading data...")
-    dogs, train_races, test_races = load_data(args.data_dir, args.test_split)
-    
-    # Create data processor
-    processor = RaceDataProcessor()
-    processor_path = os.path.join(args.output_dir, 'encoders.pkl')
-    
-    # Fit encoders with caching support (respects force_rebuild flag)
-    print("� Setting up data encoders...")
-    if args.force_rebuild:
-        print("� Force rebuilding encoders...")
-    
-    processor.fit_encoders(train_races, dogs, cache_path=processor_path, force_rebuild=args.force_rebuild)
-    
-    # Create datasets with caching
-    print("📊 Creating datasets...")
-    
-    # Cache paths for datasets
-    train_cache_path = os.path.join(args.output_dir, 'train_dataset.pkl')
-    test_cache_path = os.path.join(args.output_dir, 'test_dataset.pkl')
-    
-    # Force rebuild datasets if flag is set
-    if args.force_rebuild:
-        print("🔄 Force rebuilding dataset cache...")
-    
-    train_dataset = create_dataset(train_races, dogs, processor, cache_path=train_cache_path, force_rebuild=args.force_rebuild)
-    test_dataset = create_dataset(test_races, dogs, processor, cache_path=test_cache_path, force_rebuild=args.force_rebuild)
-    
-    # Split train into train/val
-    val_size = int(0.2 * len(train_dataset))
-    train_size = len(train_dataset) - val_size
-    
-    train_samples = train_dataset[:train_size]
-    val_samples = train_dataset[train_size:]
-    
-    print(f"📈 Dataset sizes - Train: {len(train_samples)}, Val: {len(val_samples)}, Test: {len(test_dataset)}")
-    
-    # Create data loaders with GPU optimizations
-    use_cuda = device.type == 'cuda'
-    
-    # Note: Using num_workers=0 on Windows to avoid multiprocessing issues
-    train_loader = DataLoader(
-        RaceDataset(train_samples), 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        collate_fn=collate_race_batch,
-        pin_memory=use_cuda,
-        num_workers=0  # Avoid multiprocessing issues on Windows
-    )
-    
-    val_loader = DataLoader(
-        RaceDataset(val_samples), 
-        batch_size=args.batch_size, 
-        shuffle=False, 
-        collate_fn=collate_race_batch,
-        pin_memory=use_cuda,
-        num_workers=0  # Avoid multiprocessing issues on Windows
-    )
-    
-    # Create model
-    model = GreyhoundRacingModel(
-        num_tracks=len(processor.track_encoder),
-        num_classes=len(processor.class_encoder),
-        num_categories=len(processor.category_encoder),
-        num_trainers=len(processor.trainer_encoder),
-        num_going_conditions=len(processor.going_encoder),
-        commentary_vocab_size=processor.commentary_processor.vocab_size
-    ).to(device)
-
-    print(f"🧠 Created model with {sum(p.numel() for p in model.parameters())} parameters")
-
-    # Create optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    
-    # Create learning rate scheduler based on choice
-    if args.lr_scheduler == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    elif args.lr_scheduler == 'plateau':
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
-    elif args.lr_scheduler == 'step':
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-    else:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)  # default
-    
-    print(f"📚 Using {args.lr_scheduler} learning rate scheduler")
-
-    # Create separate loss functions for train and validation to avoid confusion
-    train_criterion = BettingLoss(
-        alpha=1.1,              # Starting alpha (optimistic for early training)
-        commission=0.05,        # 5% commission
-        bet_percentage=0.02,    # 2% of bankroll per bet (not used in unit betting)
-        dynamic_alpha=True,     # Enable dynamic alpha adjustment
-        min_alpha=0.95,         # Conservative minimum
-        max_alpha=1.2           # Optimistic maximum
-    )
-    
-    val_criterion = BettingLoss(
-        alpha=1.1,              # Starting alpha (optimistic for early training)
-        commission=0.05,        # 5% commission
-        bet_percentage=0.02,    # 2% of bankroll per bet (not used in unit betting)
-        dynamic_alpha=True,     # Enable dynamic alpha adjustment
-        min_alpha=0.95,         # Conservative minimum
-        max_alpha=1.2           # Optimistic maximum
-    )
-
-    # Handle model loading - check for best existing model unless forced to create new
-    start_epoch = 0
-    best_val_profit = float('-inf')
-    
-    if args.resume:
-        # Explicit resume from specific checkpoint
-        start_epoch, best_val_profit = load_checkpoint_for_resume(
-            args.resume, model, optimizer, scheduler, device
-        )
-    elif not args.force_new_model:
-        # Auto-load best existing model
-        best_model_path = find_best_model(args.output_dir)
-        if best_model_path:
-            print(f"🔄 Auto-loading best existing model from: {best_model_path}")
-            try:
-                start_epoch, best_val_profit = load_checkpoint_for_resume(
-                    best_model_path, model, optimizer, scheduler, device
-                )
-            except Exception as e:
-                print(f"⚠️  Failed to load existing model: {e}")
-                print("   Starting with new model...")
-                start_epoch = 0
-                best_val_profit = float('-inf')
-        else:
-            print("📦 No existing model found, starting with new model")
-    else:
-        print("🆕 Force creating new model (--force_new_model specified)")
-
-    print(f"\n🚀 Starting training from epoch {start_epoch+1} to {args.epochs}...")
-    if start_epoch > 0:
-        print(f"📁 Loaded model from previous training")
-        print(f"🎯 Current best validation profit: {best_val_profit:.4f}")
-
-    print("\n💡 Training Tips:")
-    print("   • Models are saved after every epoch as 'epoch_N.pth'")
-    print("   • Best model is saved as 'best_model.pth'")
-    print("   • To resume training: --resume outputs/epoch_N.pth")
-    print("   • Use --force_new_model to start fresh")
-    print("   • Use Ctrl+C to stop training gracefully")
-    
-    # Train model
     try:
-        train_losses, val_losses = train_model(
-            model, train_loader, val_loader, train_criterion, val_criterion, optimizer, scheduler,
-            args.epochs, device, args.output_dir, start_epoch, best_val_profit
+        # Load and prepare data
+        train_dataset, val_dataset, train_loader, val_loader = load_and_prepare_data(args)
+        
+        # Save encoders for later inference
+        encoder_path = save_encoders(train_dataset, directories['encoders'])
+        
+        # Create model
+        model = create_model(args, train_dataset.vocab_sizes)
+        
+        # Load from checkpoint if specified
+        model = load_from_checkpoint_if_specified(args, model, device)
+        
+        # Create trainer
+        trainer = create_trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            alpha=args.alpha,
+            temperature=args.temperature,
+            commission=args.commission,
+            profit_weight=args.profit_weight,
+            accuracy_weight=args.accuracy_weight,
+            device=device
         )
         
-        # Save training history
-        history = {
-            'train_losses': train_losses,
-            'val_losses': val_losses,
-            'start_epoch': start_epoch,
-            'total_epochs': args.epochs
-        }
+        # Update trainer settings
+        trainer.checkpoint_dir = directories['checkpoints']
+        trainer.log_dir = directories['logs']
+        trainer.save_every = args.save_every
+        trainer.eval_every = args.eval_every
+        trainer.early_stopping.patience = args.early_stopping_patience
         
-        with open(os.path.join(args.output_dir, 'training_history.pkl'), 'wb') as f:
-            pickle.dump(history, f)
+        # Save run configuration
+        config = vars(args).copy()
+        config['vocab_sizes'] = train_dataset.vocab_sizes
+        config['device'] = str(device)
+        config['model_info'] = model.get_model_info()
+        save_run_config(config, directories['outputs'])
         
-        print(f"\n🎉 Training completed successfully!")
-        print(f"📁 Results saved in: {args.output_dir}")
-        print(f"🏆 Best model: {os.path.join(args.output_dir, 'best_model.pth')}")
+        # Clean up old checkpoints if requested
+        if args.cleanup_checkpoints:
+            cleanup_old_checkpoints(directories['checkpoints'])
+        
+        # Start training
+        logger.info(f"Starting training for {args.epochs} epochs")
+        logger.info(f"Loss function - Alpha: {args.alpha}, Temperature: {args.temperature}, Commission: {args.commission}")
+        logger.info(f"Early stopping patience: {args.early_stopping_patience} epochs")
+        
+        training_history = trainer.train(
+            num_epochs=args.epochs,
+            resume_from_checkpoint=args.resume,
+            temperature_annealing=not args.no_temperature_annealing
+        )
+        
+        # Plot training history
+        plot_path = os.path.join(directories['plots'], 'training_history.png')
+        trainer.plot_training_history(plot_path)
+        
+        # Final summary
+        logger.info("🎉 Training completed successfully!")
+        
+        if training_history['val_ppb']:
+            best_val_ppb = max(training_history['val_ppb'])
+            final_val_ppb = training_history['val_ppb'][-1]
+            logger.info(f"Best validation PPB: ${best_val_ppb:.4f}")
+            logger.info(f"Final validation PPB: ${final_val_ppb:.4f}")
+        
+        logger.info(f"Checkpoints saved in: {directories['checkpoints']}")
+        logger.info(f"Logs saved in: {directories['logs']}")
+        logger.info(f"Encoders saved in: {encoder_path}")
         
     except KeyboardInterrupt:
-        print(f"\n⏹️  Training interrupted by user")
-        print(f"📁 Latest models saved in: {args.output_dir}")
-        print(f"💡 Resume with: --resume {os.path.join(args.output_dir, 'epoch_*.pth')}")
+        logger.info("Training interrupted by user")
+        return 1
         
     except Exception as e:
-        print(f"\n❌ Training failed with error: {e}")
+        logger.error(f"Training failed with error: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
+        return 1
+    
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    exit_code = main()
+    sys.exit(exit_code)
