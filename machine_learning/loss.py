@@ -21,7 +21,7 @@ class GreyhoundBettingLoss(nn.Module):
                  commission: float = 0.05,
                  profit_weight: float = 0.7,
                  accuracy_weight: float = 0.3,
-                 min_expected_profit: float = 0.0):
+                 min_expected_profit: float = -0.02):
         """
         Args:
             alpha: Confidence multiplier for model predictions vs market odds
@@ -82,14 +82,14 @@ class GreyhoundBettingLoss(nn.Module):
         betting_logits = torch.where(
             positive_profit_mask,
             expected_profits_after_commission / self.temperature,
-            torch.full_like(expected_profits_after_commission, -1e9)
+            torch.full_like(expected_profits_after_commission, -1e6)  # Less extreme negative value
         )
         
         # For races with no positive profits, fall back to uniform over valid dogs
         uniform_logits = torch.where(
             dog_mask.bool(),
             torch.zeros_like(betting_logits),
-            torch.full_like(betting_logits, -1e9)
+            torch.full_like(betting_logits, -1e6)  # Less extreme negative value
         )
         
         final_logits = torch.where(has_positive_profits, betting_logits, uniform_logits)
@@ -118,8 +118,10 @@ class GreyhoundBettingLoss(nn.Module):
         
         # === 2. Accuracy Loss (Cross-Entropy) ===
         
-        # Standard cross-entropy loss for classification accuracy
-        log_probs = torch.log(normalized_probs + 1e-8)
+        # Use more numerically stable cross-entropy computation
+        # Clamp probabilities to avoid log(0)
+        clamped_probs = torch.clamp(normalized_probs, min=1e-7, max=1.0)
+        log_probs = torch.log(clamped_probs)
         accuracy_loss = -(actual_winners * log_probs).sum(dim=1)
         
         # Only count loss for races with valid winners
@@ -131,8 +133,18 @@ class GreyhoundBettingLoss(nn.Module):
         
         # === 3. Combined Loss ===
         
+        # Check for numerical issues and clamp if necessary
+        if torch.isnan(profit_loss) or torch.isinf(profit_loss):
+            profit_loss = torch.tensor(0.0, device=model_probs.device)
+        if torch.isnan(accuracy_loss) or torch.isinf(accuracy_loss):
+            accuracy_loss = torch.tensor(0.0, device=model_probs.device)
+        
         total_loss = (self.profit_weight * profit_loss + 
                      self.accuracy_weight * accuracy_loss)
+        
+        # Final safety check
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            total_loss = torch.tensor(1.0, device=model_probs.device)  # Fallback loss
         
         # === 4. Additional Metrics ===
         

@@ -1,6 +1,11 @@
-# Requirements for Greyhound Racing AI Model V1 - NumPy/Scikit-learn Implementation
+# Requirements for Greyhound Racing AI Model V2 - PyTorch Implementation
 
-# Core ML dependencies (NO PyTorch - using NumPy/scikit-learn)
+# Core ML dependencies - PyTorch
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Core ML dependencies (NumPy/Scikit-learn)
 numpy>=1.21.0
 scikit-learn>=1.0.0
 

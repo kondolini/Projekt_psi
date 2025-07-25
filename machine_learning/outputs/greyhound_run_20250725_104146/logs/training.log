@@ -1,0 +1,57 @@
+2025-07-25 10:41:46,520 - __main__ - INFO - Starting training run: greyhound_run_20250725_104146
+2025-07-25 10:41:46,521 - __main__ - INFO - Output directory: machine_learning/outputs\greyhound_run_20250725_104146
+2025-07-25 10:41:46,523 - root - INFO - Random seeds set to 42
+2025-07-25 10:41:46,557 - __main__ - INFO - Using device: cuda
+2025-07-25 10:41:46,562 - __main__ - INFO - Loading data from buckets...
+2025-07-25 10:41:46,563 - machine_learning.dataset - INFO - Loading dogs from enhanced directory...
+2025-07-25 10:42:10,266 - machine_learning.dataset - INFO - Loaded 110456 dogs
+2025-07-25 10:42:10,813 - machine_learning.dataset - INFO - Loading races from buckets...
+2025-07-25 10:42:34,500 - machine_learning.dataset - INFO - Loaded 620255 races
+2025-07-25 10:42:35,052 - machine_learning.dataset - INFO - Train/Val split: 487539 train, 132716 validation races
+2025-07-25 10:42:35,052 - __main__ - INFO - Creating datasets...
+2025-07-25 10:42:35,135 - machine_learning.dataset - INFO - Vocabulary sizes: {'num_tracks': 26, 'num_classes': 31, 'num_categories': 1, 'num_trainers': 494, 'num_going_conditions': 10, 'commentary_vocab_size': 643}
+2025-07-25 10:42:35,135 - machine_learning.dataset - INFO - Dataset initialized with 601 valid races
+2025-07-25 10:43:03,315 - machine_learning.dataset - INFO - Vocabulary sizes: {'num_tracks': 24, 'num_classes': 52, 'num_categories': 1, 'num_trainers': 557, 'num_going_conditions': 48, 'commentary_vocab_size': 10495}
+2025-07-25 10:43:03,317 - machine_learning.dataset - INFO - Dataset initialized with 130425 valid races
+2025-07-25 10:43:03,332 - __main__ - INFO - Created data loaders - Train: 37 batches, Val: 8152 batches
+2025-07-25 10:43:04,622 - root - INFO - Encoders saved to machine_learning/outputs\greyhound_run_20250725_104146\encoders\encoders.pkl
+2025-07-25 10:43:04,622 - __main__ - INFO - Creating model...
+2025-07-25 10:43:06,545 - machine_learning.trainer - INFO - Trainer initialized. Device: cuda
+2025-07-25 10:43:06,545 - machine_learning.trainer - INFO - Model parameters: 3,274,337
+2025-07-25 10:43:06,547 - root - INFO - Run configuration saved to machine_learning/outputs\greyhound_run_20250725_104146\outputs\run_config.json
+2025-07-25 10:43:06,548 - __main__ - INFO - Starting training for 2 epochs
+2025-07-25 10:43:06,548 - __main__ - INFO - Loss function - Alpha: 1.0, Temperature: 1.0, Commission: 0.05
+2025-07-25 10:43:06,549 - __main__ - INFO - Early stopping patience: 20 epochs
+2025-07-25 10:43:06,549 - machine_learning.trainer - INFO - Starting training for 2 epochs
+2025-07-25 10:43:06,549 - machine_learning.trainer - INFO - Initial temperature: 1.0
+2025-07-25 10:45:06,641 - machine_learning.trainer - ERROR - Training error: must be real number, not NoneType
+2025-07-25 10:45:06,728 - machine_learning.trainer - INFO - Checkpoint saved: machine_learning/outputs\greyhound_run_20250725_104146\checkpoints\error_checkpoint.pth
+2025-07-25 10:45:06,729 - __main__ - ERROR - Training failed with error: must be real number, not NoneType
+2025-07-25 10:45:06,783 - __main__ - ERROR - Traceback (most recent call last):
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\train.py", line 393, in main
+    training_history = trainer.train(
+                       ^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\trainer.py", line 306, in train
+    val_metrics = self.validate_epoch()
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\trainer.py", line 209, in validate_epoch
+    for batch in tqdm(self.val_loader, desc="Validation"):
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\tqdm\std.py", line 1181, in __iter__
+    for obj in iterable:
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\utils\data\dataloader.py", line 708, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\utils\data\dataloader.py", line 764, in _next_data
+    data = self._dataset_fetcher.fetch(index)  # may raise StopIteration
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\blin\Documents\ITAP\.conda\Lib\site-packages\torch\utils\data\_utils\fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "C:\Users\blin\Documents\Projekt_psi\machine_learning\dataset.py", line 234, in __getitem__
+    'market_odds': torch.FloatTensor(dogs_data['market_odds']),
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: must be real number, not NoneType
+

@@ -26,11 +26,13 @@ import argparse
 import logging
 import torch
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Tuple
 
-# Add parent directory for imports
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, parent_dir)
+# Add parent directory for imports - make it more robust
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 # Import our modules
 from machine_learning.model import GreyhoundRacingModel
@@ -38,9 +40,11 @@ from machine_learning.dataset import (
     load_data_from_buckets, 
     create_train_val_split, 
     GreyhoundDataset, 
-    create_dataloaders
+    create_dataloaders,
+    build_encoders_on_full_dataset
 )
 from machine_learning.trainer import create_trainer
+from machine_learning.cache_manager import CacheManager
 from machine_learning.utils import (
     setup_logging, 
     print_gpu_info, 
@@ -55,6 +59,28 @@ from machine_learning.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_data_paths(base_data_dir: str) -> Tuple[str, str, str]:
+    """
+    Resolve data directory paths relative to the script location if they're not absolute
+    
+    Args:
+        base_data_dir: Base data directory (can be relative or absolute)
+        
+    Returns:
+        Tuple of (dogs_enhanced_dir, races_dir, unified_dir)
+    """
+    # If not absolute, make it relative to the project root (parent of machine_learning)
+    if not os.path.isabs(base_data_dir):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        base_data_dir = os.path.join(project_root, base_data_dir)
+    
+    dogs_enhanced_dir = os.path.join(base_data_dir, 'dogs_enhanced')
+    races_dir = os.path.join(base_data_dir, 'races')
+    unified_dir = os.path.join(base_data_dir, 'unified')
+    
+    return dogs_enhanced_dir, races_dir, unified_dir
 
 
 def parse_arguments():
@@ -153,6 +179,18 @@ def parse_arguments():
                        help='Disable temperature annealing during training')
     parser.add_argument('--cleanup_checkpoints', action='store_true',
                        help='Clean up old checkpoint files')
+    parser.add_argument('--max_races', type=int, default=None,
+                       help='Limit number of races for testing (default: use all)')
+    
+    # Cache management
+    parser.add_argument('--cache_dir', type=str, default='cache',
+                       help='Directory for caching processed data and encoders')
+    parser.add_argument('--rebuild_cache', action='store_true',
+                       help='Force rebuild of cached data and encoders')
+    parser.add_argument('--clear_cache', action='store_true',
+                       help='Clear all cached data before training')
+    parser.add_argument('--cache_stats', action='store_true',
+                       help='Show cache statistics and exit')
     
     return parser.parse_args()
 
@@ -201,15 +239,31 @@ def setup_device(args):
 
 
 def load_and_prepare_data(args):
-    """Load and prepare data for training"""
+    """Load and prepare data for training with caching support"""
+    
+    # Initialize cache manager
+    cache_manager = CacheManager(args.cache_dir)
+    
+    if args.cache_stats:
+        cache_manager.print_cache_stats()
+        return None, None, None, None
+    
+    if args.clear_cache:
+        cache_manager.clear_cache()
+        logger.info("Cache cleared")
     
     logger.info("Loading data from buckets...")
     
-    # Setup data directories
-    data_dir = args.data_dir
-    dogs_enhanced_dir = args.dogs_enhanced_dir or os.path.join(data_dir, 'dogs_enhanced')
-    races_dir = args.races_dir or os.path.join(data_dir, 'races')
-    unified_dir = args.unified_dir or os.path.join(data_dir, 'unified')
+    # Resolve data directory paths (handles relative/absolute paths properly)
+    dogs_enhanced_dir, races_dir, unified_dir = resolve_data_paths(args.data_dir)
+    
+    # Allow override of individual directories if specified
+    if args.dogs_enhanced_dir:
+        dogs_enhanced_dir = args.dogs_enhanced_dir
+    if args.races_dir:
+        races_dir = args.races_dir  
+    if args.unified_dir:
+        unified_dir = args.unified_dir
     
     # Validate directories exist
     for dir_path, name in [(dogs_enhanced_dir, 'dogs_enhanced'), 
@@ -218,10 +272,51 @@ def load_and_prepare_data(args):
         if not os.path.exists(dir_path):
             raise FileNotFoundError(f"Directory not found: {dir_path} ({name})")
     
-    # Load data
+    logger.info(f"Data directories:")
+    logger.info(f"  - Dogs: {dogs_enhanced_dir}")
+    logger.info(f"  - Races: {races_dir}")
+    logger.info(f"  - Unified: {unified_dir}")
+    
+    # Configuration for cache key generation
+    data_dirs = {
+        'dogs_enhanced': dogs_enhanced_dir,
+        'races': races_dir,
+        'unified': unified_dir
+    }
+    
+    # Configuration that affects data processing
+    config = {
+        'max_races': args.max_races,
+        'exclude_trial_races': args.exclude_trial_races,
+        'val_start_date': args.val_start_date,
+        'val_end_date': args.val_end_date,
+        'max_dogs_per_race': args.max_dogs_per_race,
+        'max_history_length': args.max_history_length,
+        'max_commentary_length': args.max_commentary_length
+    }
+    
+    # Try to load cached encoders first (needed for dataset creation)
+    encoders = None
+    vocab_sizes = None
+    
+    if not args.rebuild_cache:
+        cached_encoders = cache_manager.get_cached_encoders(data_dirs, config)
+        if cached_encoders is not None:
+            encoders, vocab_sizes = cached_encoders
+    
+    # Load raw data (always need this)
     dog_lookup, races = load_data_from_buckets(dogs_enhanced_dir, races_dir, unified_dir)
     
+    # If no cached encoders, build them on the full dataset
+    if encoders is None:
+        logger.info("Building encoders on full dataset...")
+        encoders, vocab_sizes = build_encoders_on_full_dataset(races, dog_lookup)
+        
+        # Cache the encoders
+        cache_manager.save_encoders(encoders, vocab_sizes, data_dirs, config)
+    
     # Create train/validation split
+    logger.info("Creating train/validation split...")
     val_start_date = datetime.strptime(args.val_start_date, '%Y-%m-%d').date()
     val_end_date = None
     if args.val_end_date:
@@ -229,55 +324,62 @@ def load_and_prepare_data(args):
     
     train_races, val_races = create_train_val_split(races, val_start_date, val_end_date)
     
-    # Create datasets
-    logger.info("Creating datasets...")
+    logger.info(f"Train/Val split: {len(train_races)} train, {len(val_races)} validation races")
     
-    # We'll use empty track_lookup for now - could be enhanced later
-    track_lookup = {}
+    # Try to load cached datasets
+    cached_data = None
+    if not args.rebuild_cache:
+        cached_data = cache_manager.get_cached_datasets(data_dirs, config)
     
-    train_dataset = GreyhoundDataset(
-        races=train_races,
-        dog_lookup=dog_lookup,
-        track_lookup=track_lookup,
-        max_dogs_per_race=args.max_dogs_per_race,
-        max_history_length=args.max_history_length,
-        max_commentary_length=args.max_commentary_length,
-        exclude_trial_races=args.exclude_trial_races
-    )
-    
-    val_dataset = GreyhoundDataset(
-        races=val_races,
-        dog_lookup=dog_lookup,
-        track_lookup=track_lookup,
-        max_dogs_per_race=args.max_dogs_per_race,
-        max_history_length=args.max_history_length,
-        max_commentary_length=args.max_commentary_length,
-        exclude_trial_races=args.exclude_trial_races
-    )
-    
-    # Use same encoders for validation set
-    val_dataset.track_encoder = train_dataset.track_encoder
-    val_dataset.class_encoder = train_dataset.class_encoder
-    val_dataset.category_encoder = train_dataset.category_encoder
-    val_dataset.trainer_encoder = train_dataset.trainer_encoder
-    val_dataset.going_encoder = train_dataset.going_encoder
-    val_dataset.commentary_vocab = train_dataset.commentary_vocab
-    val_dataset.vocab_sizes = train_dataset.vocab_sizes
+    if cached_data is not None:
+        train_dataset, val_dataset, metadata = cached_data
+        logger.info(f"Loaded cached datasets with {metadata['train_size']} train and {metadata['val_size']} validation samples")
+    else:
+        logger.info("Creating datasets...")
+        
+        # We'll use empty track_lookup for now - could be enhanced later
+        track_lookup = {}
+        
+        # Create datasets with pre-built encoders
+        train_dataset = GreyhoundDataset(
+            races=train_races,
+            dog_lookup=dog_lookup,
+            track_lookup=track_lookup,
+            max_dogs_per_race=args.max_dogs_per_race,
+            max_history_length=args.max_history_length,
+            max_commentary_length=args.max_commentary_length,
+            exclude_trial_races=args.exclude_trial_races,
+            max_races=args.max_races,
+            encoders=encoders,
+            vocab_sizes=vocab_sizes
+        )
+        
+        val_dataset = GreyhoundDataset(
+            races=val_races,
+            dog_lookup=dog_lookup,
+            track_lookup=track_lookup,
+            max_dogs_per_race=args.max_dogs_per_race,
+            max_history_length=args.max_history_length,
+            max_commentary_length=args.max_commentary_length,
+            exclude_trial_races=args.exclude_trial_races,
+            encoders=encoders,
+            vocab_sizes=vocab_sizes
+        )
+        
+        # Cache the processed datasets
+        metadata = {
+            'train_size': len(train_dataset),
+            'val_size': len(val_dataset),
+            'num_dogs': len(dog_lookup),
+            'num_races': len(races)
+        }
+        
+        cache_manager.save_datasets(train_dataset, val_dataset, data_dirs, config, metadata)
     
     # Print data summary
-    print_data_summary(train_dataset, val_dataset)
+    print_data_summary(train_dataset, val_dataset, dog_lookup)
     
-    # Create data loaders
-    train_loader, val_loader = create_dataloaders(
-        train_dataset, 
-        val_dataset, 
-        batch_size=args.batch_size,
-        num_workers=args.num_workers
-    )
-    
-    logger.info(f"Created data loaders - Train: {len(train_loader)} batches, Val: {len(val_loader)} batches")
-    
-    return train_dataset, val_dataset, train_loader, val_loader
+    return train_dataset, val_dataset, vocab_sizes, dog_lookup
 
 
 def create_model(args, vocab_sizes):
@@ -301,7 +403,17 @@ def create_model(args, vocab_sizes):
         max_dogs_per_race=args.max_dogs_per_race
     )
     
-    # Print model information
+    # Count and display model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    logger.info(f"Model created with {total_params:,} total parameters ({trainable_params:,} trainable)")
+    print(f"🏗️  MODEL INFO:")
+    print(f"   - Total parameters: {total_params:,}")
+    print(f"   - Trainable parameters: {trainable_params:,}")
+    print(f"   - Model size: {total_params * 4 / 1024 / 1024:.1f} MB (32-bit)")
+    
+    # Print detailed model information
     print_model_info(model)
     
     return model
@@ -338,13 +450,24 @@ def main():
     
     try:
         # Load and prepare data
-        train_dataset, val_dataset, train_loader, val_loader = load_and_prepare_data(args)
+        result = load_and_prepare_data(args)
         
-        # Save encoders for later inference
-        encoder_path = save_encoders(train_dataset, directories['encoders'])
+        # Handle cache stats case
+        if result[0] is None:  # cache_stats was requested
+            return
+        
+        train_dataset, val_dataset, vocab_sizes, dog_lookup = result
+        
+        # Create data loaders
+        train_loader, val_loader = create_dataloaders(
+            train_dataset, 
+            val_dataset, 
+            batch_size=args.batch_size,
+            num_workers=args.num_workers
+        )
         
         # Create model
-        model = create_model(args, train_dataset.vocab_sizes)
+        model = create_model(args, vocab_sizes)
         
         # Load from checkpoint if specified
         model = load_from_checkpoint_if_specified(args, model, device)
@@ -408,7 +531,7 @@ def main():
         
         logger.info(f"Checkpoints saved in: {directories['checkpoints']}")
         logger.info(f"Logs saved in: {directories['logs']}")
-        logger.info(f"Encoders saved in: {encoder_path}")
+        logger.info("Encoders cached for reuse")
         
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")

@@ -11,14 +11,18 @@ from collections import defaultdict, Counter
 import re
 from sklearn.preprocessing import LabelEncoder
 import logging
+from tqdm import tqdm
 
-# Add parent directory to path for imports
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, parent_dir)
+# Add parent directory to path for imports - make it more robust
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 from models.race import Race
 from models.dog import Dog
 from models.track import Track
+from .cache_manager import CacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,10 @@ class GreyhoundDataset(Dataset):
                  max_history_length: int = 10,
                  max_commentary_length: int = 5,
                  min_dogs_per_race: int = 3,
-                 exclude_trial_races: bool = True):
+                 exclude_trial_races: bool = True,
+                 max_races: Optional[int] = None,
+                 encoders: Optional[Dict] = None,
+                 vocab_sizes: Optional[Dict] = None):
         """
         Initialize dataset
         
@@ -52,6 +59,9 @@ class GreyhoundDataset(Dataset):
             max_commentary_length: Maximum number of commentary tags per race
             min_dogs_per_race: Minimum dogs required for valid race
             exclude_trial_races: Whether to exclude races without odds
+            max_races: Optional limit on number of races to process (for testing)
+            encoders: Pre-built encoders (if None, will build from data)
+            vocab_sizes: Pre-computed vocabulary sizes (if None, will compute from encoders)
         """
         self.dog_lookup = dog_lookup
         self.track_lookup = track_lookup
@@ -60,11 +70,22 @@ class GreyhoundDataset(Dataset):
         self.max_commentary_length = max_commentary_length
         self.min_dogs_per_race = min_dogs_per_race
         
+        # Limit races if specified (useful for testing/debugging)
+        if max_races is not None:
+            races = races[:max_races]
+            print(f"Limited to first {max_races} races for processing")
+        
         # Filter valid races
+        print(f"Filtering valid races from {len(races)} input races...")
         self.races = self._filter_valid_races(races, exclude_trial_races)
         
-        # Build vocabularies and encoders
-        self._build_encoders()
+        # Use pre-built encoders if provided, otherwise build them
+        if encoders is not None and vocab_sizes is not None:
+            print("Using pre-built encoders...")
+            self._load_encoders(encoders, vocab_sizes)
+        else:
+            print("Building vocabularies and encoders...")
+            self._build_encoders()
         
         logger.info(f"Dataset initialized with {len(self.races)} valid races")
         
@@ -96,8 +117,28 @@ class GreyhoundDataset(Dataset):
             
         return valid_races
     
+    def _load_encoders(self, encoders: Dict, vocab_sizes: Dict):
+        """Load pre-built encoders and vocabulary sizes"""
+        
+        # Load encoders
+        self.track_encoder = encoders['track_encoder']
+        self.class_encoder = encoders['class_encoder'] 
+        self.category_encoder = encoders['category_encoder']
+        self.trainer_encoder = encoders['trainer_encoder']
+        self.going_encoder = encoders['going_encoder']
+        self.commentary_encoder = encoders['commentary_encoder']
+        
+        # Store vocabulary sizes
+        self.vocab_sizes = vocab_sizes.copy()
+        
+        logger.info("Loaded pre-built encoders:")
+        for name, size in vocab_sizes.items():
+            logger.info(f"  - {name}: {size}")
+    
     def _build_encoders(self):
         """Build label encoders for categorical features"""
+        
+        print(f"Building encoders from {len(self.races)} races...")
         
         # Collect all unique values
         tracks = set()
@@ -107,35 +148,45 @@ class GreyhoundDataset(Dataset):
         going_conditions = set()
         commentary_vocab = set()
         
-        for race in self.races:
-            tracks.add(race.track_name)
-            classes.add(race.race_class or 'Unknown')
-            categories.add(race.category or 'Unknown')
-            
-            # Get dog information
-            for dog_id in race.dog_ids.values():
-                if dog_id in self.dog_lookup:
-                    dog = self.dog_lookup[dog_id]
-                    if dog.trainer:
-                        trainers.add(dog.trainer)
+        # Process races in batches for better memory management with progress bar
+        batch_size = 1000
+        with tqdm(total=len(self.races), desc="Processing races for vocabulary", unit="races") as pbar:
+            for i in range(0, len(self.races), batch_size):
+                batch_races = self.races[i:i + batch_size]
+                
+                for race in batch_races:
+                    tracks.add(race.track_name)
+                    classes.add(race.race_class or 'Unknown')
+                    categories.add(race.category or 'Unknown')
                     
-                    # Get historical race information
-                    race_datetime = datetime.combine(race.race_date, race.race_time)
-                    for participation in dog.get_participations_up_to(race_datetime):
-                        if participation.going:
-                            going_conditions.add(participation.going)
-                        
-                        # Extract commentary vocabulary
-                        for tag in participation.commentary_tags:
-                            # Simple tokenization
+                    # Get dog information for this race only
+                    for dog_id in race.dog_ids.values():
+                        if dog_id in self.dog_lookup:
+                            dog = self.dog_lookup[dog_id]
+                            if dog.trainer:
+                                trainers.add(dog.trainer)
+                            
+                            # Only sample recent historical races for vocabulary building
+                            # to avoid processing entire history for every dog
+                            race_datetime = datetime.combine(race.race_date, race.race_time)
+                            recent_participations = dog.get_last_n_races_before(race_datetime, 5)  # Only last 5 races
+                            
+                            for participation in recent_participations:
+                                if participation.going:
+                                    going_conditions.add(participation.going)
+                                
+                                # Extract commentary vocabulary (limit to avoid memory issues)
+                                for tag in participation.commentary_tags[:3]:  # Only first 3 tags
+                                    words = re.findall(r'\b\w+\b', tag.lower())
+                                    commentary_vocab.update(words[:10])  # Only first 10 words per tag
+                    
+                    # Add race commentary (also limited)
+                    for tags in race.commentary_tags.values():
+                        for tag in tags[:3]:  # Only first 3 tags
                             words = re.findall(r'\b\w+\b', tag.lower())
-                            commentary_vocab.update(words)
-            
-            # Add race commentary
-            for tags in race.commentary_tags.values():
-                for tag in tags:
-                    words = re.findall(r'\b\w+\b', tag.lower())
-                    commentary_vocab.update(words)
+                            commentary_vocab.update(words[:10])  # Only first 10 words per tag
+                
+                pbar.update(len(batch_races))
         
         # Build encoders
         self.track_encoder = LabelEncoder()
@@ -473,6 +524,121 @@ class GreyhoundDataset(Dataset):
         return encoded[:self.max_commentary_length]
 
 
+def build_encoders_on_full_dataset(all_races: List[Race], dog_lookup: Dict[str, Dog]) -> Tuple[Dict, Dict]:
+    """
+    Build encoders on the full dataset (training + validation combined)
+    This ensures consistent encoding across all data splits.
+    
+    Args:
+        all_races: Complete list of races (train + val combined)
+        dog_lookup: Dictionary of all dogs
+        
+    Returns:
+        Tuple of (encoders_dict, vocab_sizes_dict)
+    """
+    
+    logger.info(f"Building encoders on full dataset ({len(all_races)} races)...")
+    
+    # Collect all unique values from the complete dataset
+    tracks = set()
+    classes = set()
+    categories = set()
+    trainers = set()
+    going_conditions = set()
+    commentary_vocab = set()
+    
+    # Process all races with progress bar
+    with tqdm(total=len(all_races), desc="Processing races for full vocabulary", unit="races") as pbar:
+        for race in all_races:
+            tracks.add(race.track_name)
+            classes.add(race.race_class or 'Unknown')
+            categories.add(race.category or 'Unknown')
+            
+            # Get dog information for this race
+            for dog_id in race.dog_ids.values():
+                if dog_id in dog_lookup:
+                    dog = dog_lookup[dog_id]
+                    if dog.trainer:
+                        trainers.add(dog.trainer)
+                    
+                    # Process all historical races (not limited for encoder building)
+                    race_datetime = datetime.combine(race.race_date, race.race_time)
+                    
+                    # Get more historical data for complete vocabulary
+                    historical_participations = dog.get_last_n_races_before(race_datetime, 20)  # More history for vocab
+                    
+                    for participation in historical_participations:
+                        if participation.going:
+                            going_conditions.add(participation.going)
+                        
+                        # Extract commentary vocabulary
+                        for tag in participation.commentary_tags:
+                            words = re.findall(r'\b\w+\b', tag.lower())
+                            commentary_vocab.update(words)
+            
+            # Add race commentary
+            for tags in race.commentary_tags.values():
+                for tag in tags:
+                    words = re.findall(r'\b\w+\b', tag.lower())
+                    commentary_vocab.update(words)
+            
+            pbar.update(1)
+    
+    logger.info(f"Vocabulary sizes:")
+    logger.info(f"  - Tracks: {len(tracks)}")
+    logger.info(f"  - Classes: {len(classes)}")
+    logger.info(f"  - Categories: {len(categories)}")
+    logger.info(f"  - Trainers: {len(trainers)}")
+    logger.info(f"  - Going conditions: {len(going_conditions)}")
+    logger.info(f"  - Commentary vocabulary: {len(commentary_vocab)}")
+    
+    # Build encoders
+    print("Building label encoders...")
+    
+    track_encoder = LabelEncoder()
+    track_encoder.fit(list(tracks) + ['Unknown'])
+    
+    class_encoder = LabelEncoder()
+    class_encoder.fit(list(classes) + ['Unknown'])
+    
+    category_encoder = LabelEncoder()
+    category_encoder.fit(list(categories) + ['Unknown'])
+    
+    trainer_encoder = LabelEncoder()
+    trainer_encoder.fit(list(trainers) + ['Unknown'])
+    
+    going_encoder = LabelEncoder()
+    going_encoder.fit(list(going_conditions) + ['Unknown'])
+    
+    # Build commentary vocabulary mapping
+    commentary_vocab_list = ['<PAD>', '<UNK>'] + sorted(list(commentary_vocab))
+    commentary_word_to_id = {word: idx for idx, word in enumerate(commentary_vocab_list)}
+    
+    # Store encoders
+    encoders = {
+        'track_encoder': track_encoder,
+        'class_encoder': class_encoder,
+        'category_encoder': category_encoder,
+        'trainer_encoder': trainer_encoder,
+        'going_encoder': going_encoder,
+        'commentary_encoder': commentary_word_to_id
+    }
+    
+    # Vocabulary sizes
+    vocab_sizes = {
+        'num_tracks': len(track_encoder.classes_),
+        'num_classes': len(class_encoder.classes_),
+        'num_categories': len(category_encoder.classes_),
+        'num_trainers': len(trainer_encoder.classes_),
+        'num_going_conditions': len(going_encoder.classes_),
+        'commentary_vocab_size': len(commentary_vocab_list)
+    }
+    
+    logger.info("✅ Full dataset encoders built successfully")
+    
+    return encoders, vocab_sizes
+
+
 def load_data_from_buckets(dogs_enhanced_dir: str, races_dir: str, unified_dir: str) -> Tuple[Dict[str, Dog], List[Race]]:
     """
     Load dogs and races from bucket files
@@ -482,17 +648,20 @@ def load_data_from_buckets(dogs_enhanced_dir: str, races_dir: str, unified_dir: 
     """
     logger.info("Loading dogs from enhanced directory...")
     
-    # Load all dogs
+    # Get list of dog bucket files
+    dog_bucket_files = [f for f in os.listdir(dogs_enhanced_dir) 
+                       if f.startswith('dogs_bucket_') and f.endswith('.pkl')]
+    
+    # Load all dogs with progress bar
     dog_lookup = {}
-    for bucket_file in os.listdir(dogs_enhanced_dir):
-        if bucket_file.startswith('dogs_bucket_') and bucket_file.endswith('.pkl'):
-            bucket_path = os.path.join(dogs_enhanced_dir, bucket_file)
-            try:
-                with open(bucket_path, 'rb') as f:
-                    bucket_dogs = pickle.load(f)
-                    dog_lookup.update(bucket_dogs)
-            except Exception as e:
-                logger.error(f"Error loading dog bucket {bucket_file}: {e}")
+    for bucket_file in tqdm(dog_bucket_files, desc="Loading dog buckets", unit="buckets"):
+        bucket_path = os.path.join(dogs_enhanced_dir, bucket_file)
+        try:
+            with open(bucket_path, 'rb') as f:
+                bucket_dogs = pickle.load(f)
+                dog_lookup.update(bucket_dogs)
+        except Exception as e:
+            logger.error(f"Error loading dog bucket {bucket_file}: {e}")
     
     logger.info(f"Loaded {len(dog_lookup)} dogs")
     
@@ -503,11 +672,11 @@ def load_data_from_buckets(dogs_enhanced_dir: str, races_dir: str, unified_dir: 
     
     logger.info("Loading races from buckets...")
     
-    # Load all races
+    # Load all races with progress bar
     races = []
     loaded_buckets = {}
     
-    for race_key, race_info in race_index.items():
+    for race_key, race_info in tqdm(race_index.items(), desc="Loading races", unit="races"):
         bucket_path = race_info['path']
         storage_key = race_info['key']
         
