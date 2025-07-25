@@ -2,7 +2,8 @@
 """
 Greyhound Racing Model Training Script
 
-This script trains a neural network model for greyhound racing predictions
+This script trains a neural network    parser.add_argument('--batch_size', type=int, default=48,
+                        help='Batch size for training (default: 48, optimized for RTX 2060)')odel for greyhound racing predictions
 with a focus on betting profitability.
 
 Features:
@@ -26,7 +27,7 @@ import argparse
 import logging
 import torch
 from datetime import date, datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 # Add parent directory for imports - make it more robust
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -100,8 +101,8 @@ def parse_arguments():
     # Training arguments
     parser.add_argument('--epochs', type=int, default=50,
                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=32,
-                       help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=64,
+                       help='Batch size for training (default: 64, optimized for RTX 2060 with mixed precision)')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                        help='Learning rate for optimizer')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
@@ -161,7 +162,7 @@ def parse_arguments():
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use: auto, cpu, cuda, cuda:0, etc.')
     parser.add_argument('--num_workers', type=int, default=0,
-                       help='Number of data loader workers')
+                       help='Number of data loader workers (default: 0, Windows multiprocessing can cause memory issues)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility')
     
@@ -419,6 +420,83 @@ def create_model(args, vocab_sizes):
     return model
 
 
+def auto_detect_batch_size(model: torch.nn.Module, device: torch.device, sample_batch: Dict, max_batch_size: int = 64) -> int:
+    """
+    Auto-detect optimal batch size based on GPU memory
+    
+    Args:
+        model: The model to test
+        device: Device to test on
+        sample_batch: Sample batch data
+        max_batch_size: Maximum batch size to test
+        
+    Returns:
+        Optimal batch size
+    """
+    if not torch.cuda.is_available():
+        return 16  # Conservative for CPU
+    
+    logger.info("Auto-detecting optimal batch size...")
+    
+    # Get GPU memory info
+    gpu_properties = torch.cuda.get_device_properties(0)
+    total_memory = gpu_properties.total_memory / 1024**3  # GB
+    
+    logger.info(f"GPU: {gpu_properties.name}, Total Memory: {total_memory:.1f}GB")
+    
+    # RTX 2060 specific optimizations
+    if "2060" in gpu_properties.name:
+        # For RTX 2060 (6GB), optimal batch sizes with mixed precision training
+        if total_memory >= 5.5:  # Account for system usage
+            return 96  # Mixed precision allows larger batches for better GPU utilization
+        else:
+            return 80  # Conservative but efficient with AMP
+    elif "3060" in gpu_properties.name or "3070" in gpu_properties.name:
+        return 80
+    elif "3080" in gpu_properties.name or "3090" in gpu_properties.name:
+        return 128
+    elif "4060" in gpu_properties.name or "4070" in gpu_properties.name:
+        return 96
+    elif "4080" in gpu_properties.name or "4090" in gpu_properties.name:
+        return 144
+    
+    # Fallback based on memory
+    if total_memory >= 8:
+        return 64
+    elif total_memory >= 6:
+        return 48
+    elif total_memory >= 4:
+        return 32
+    else:
+        return 16
+
+
+def print_gpu_optimization_info(device: torch.device, batch_size: int):
+    """Print GPU optimization information"""
+    if not torch.cuda.is_available():
+        print("🖥️  Running on CPU")
+        return
+        
+    gpu_props = torch.cuda.get_device_properties(0)
+    total_memory = gpu_props.total_memory / 1024**3
+    
+    print("🚀 GPU OPTIMIZATION:")
+    print(f"   - GPU: {gpu_props.name}")
+    print(f"   - Total VRAM: {total_memory:.1f}GB")
+    print(f"   - Batch Size: {batch_size}")
+    print(f"   - Compute Capability: {gpu_props.major}.{gpu_props.minor}")
+    
+    # Recommendations based on GPU
+    if "2060" in gpu_props.name:
+        if batch_size < 48:
+            print("   - 💡 Consider increasing batch size to 48-64 for better GPU utilization")
+        elif batch_size > 64:
+            print("   - ⚠️  High batch size may cause OOM on RTX 2060")
+    
+    if total_memory >= 6 and batch_size < 32:
+        print("   - 💡 GPU has enough VRAM for larger batch sizes")
+
+
 def load_from_checkpoint_if_specified(args, model, device):
     """Load model from checkpoint if specified"""
     
@@ -447,6 +525,16 @@ def main():
     
     # Setup device
     device = setup_device(args)
+    
+    # Auto-detect optimal batch size if using default
+    if args.batch_size == 48:  # Default value
+        optimal_batch_size = auto_detect_batch_size(None, device, None)
+        if optimal_batch_size != args.batch_size:
+            logger.info(f"Auto-detected optimal batch size: {optimal_batch_size} (was {args.batch_size})")
+            args.batch_size = optimal_batch_size
+    
+    # Print GPU optimization info
+    print_gpu_optimization_info(device, args.batch_size)
     
     try:
         # Load and prepare data

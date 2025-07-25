@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.amp import GradScaler, autocast
 from typing import Dict, List, Optional, Tuple
 import logging
 from datetime import datetime, date
@@ -102,6 +103,11 @@ class GreyhoundTrainer:
         self.optimizer = optimizer
         self.device = device
         
+        # Mixed precision training for better GPU utilization
+        # Temporarily disable mixed precision to ensure GPU utilization
+        self.scaler = None
+        self.use_amp = False  # Disable mixed precision for now to debug GPU usage
+        
         # Directories
         self.checkpoint_dir = checkpoint_dir
         self.log_dir = log_dir
@@ -137,6 +143,29 @@ class GreyhoundTrainer:
         
         logger.info(f"Trainer initialized. Device: {device}")
         logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+        
+        # GPU debugging info
+        if device.type == 'cuda':
+            logger.info(f"CUDA Device: {torch.cuda.get_device_name()}")
+            logger.info(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+            logger.info(f"Mixed Precision Training: {self.use_amp}")
+            
+            # Force GPU memory allocation with larger test
+            logger.info("Forcing GPU memory allocation...")
+            test_tensor = torch.randn(5000, 5000).to(device)  # Much larger allocation
+            test_result = torch.mm(test_tensor, test_tensor.T)  # Force computation
+            logger.info(f"GPU Memory after forced allocation: {torch.cuda.memory_allocated() / 1024**3:.3f}GB")
+            del test_tensor, test_result
+            torch.cuda.empty_cache()
+            
+            # Ensure model is actually on GPU
+            logger.info("Verifying model on GPU...")
+            for name, param in self.model.named_parameters():
+                if not param.is_cuda:
+                    logger.warning(f"Parameter {name} is not on GPU!")
+                break  # Just check first parameter
+            else:
+                logger.info("✅ Model confirmed on GPU")
     
     def train_epoch(self) -> Dict[str, float]:
         """Train for one epoch"""
@@ -146,13 +175,24 @@ class GreyhoundTrainer:
         progress_bar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch}")
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Move batch to device
+            # Move batch to device and verify
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
+            
+            # Debug: Check if data is actually on GPU (only first batch)
+            if batch_idx == 0 and self.device.type == 'cuda':
+                for key, value in batch.items():
+                    if isinstance(value, torch.Tensor):
+                        if not value.is_cuda:
+                            logger.warning(f"Batch data '{key}' is not on GPU!")
+                        else:
+                            logger.info(f"✅ Batch data '{key}' confirmed on GPU")
+                            break  # Just check one tensor
             
             # Forward pass
             self.optimizer.zero_grad()
             
+            # Regular forward pass (mixed precision disabled for debugging)
             model_probs = self.model(batch)
             loss_dict = self.loss_fn(
                 model_probs=model_probs,
@@ -188,11 +228,22 @@ class GreyhoundTrainer:
             # Update progress bar
             if batch_idx % 10 == 0:
                 avg_metrics = self.train_metrics.get_averages()
+                
+                # Get GPU memory info
+                if torch.cuda.is_available():
+                    gpu_memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                    gpu_memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
+                    gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+                    gpu_utilization = f"{gpu_memory_allocated:.1f}/{gpu_memory_total:.1f}GB"
+                else:
+                    gpu_utilization = "N/A"
+                
                 progress_bar.set_postfix({
                     'Loss': f"{avg_metrics.get('total_loss', 0):.4f}",
                     'PPB': f"{avg_metrics.get('actual_ppb', 0):.4f}",
                     'Hit%': f"{avg_metrics.get('hit_rate', 0)*100:.1f}",
-                    'Bet%': f"{avg_metrics.get('betting_frequency', 0)*100:.1f}"
+                    'Bet%': f"{avg_metrics.get('betting_frequency', 0)*100:.1f}",
+                    'GPU': gpu_utilization
                 })
         
         # Calculate epoch averages
@@ -494,6 +545,25 @@ def create_trainer(model: GreyhoundRacingModel,
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     model = model.to(device)
+    
+    # Force GPU memory allocation to ensure proper utilization
+    if device.type == 'cuda':
+        logger.info("Initializing GPU memory...")
+        torch.cuda.empty_cache()
+        # Warm up GPU with a dummy forward pass
+        try:
+            dummy_input = {
+                'dog_features': torch.randn(2, 6, 100).to(device),
+                'race_features': torch.randn(2, 20).to(device),
+                'dog_mask': torch.ones(2, 6).to(device)
+            }
+            with torch.no_grad():
+                _ = model(dummy_input)
+            logger.info("GPU warm-up successful")
+            del dummy_input
+        except Exception as e:
+            logger.warning(f"GPU warm-up failed: {e}")
+        torch.cuda.empty_cache()
     
     # Create loss function
     loss_fn = GreyhoundBettingLoss(

@@ -206,7 +206,9 @@ class GreyhoundRacingModel(nn.Module):
         logits = self.final_processor(all_features).squeeze(-1)  # [batch_size, max_dogs]
         
         # Apply mask to logits (set padded dogs to very negative values)
-        masked_logits = logits.masked_fill(~dog_mask.bool(), -1e9)
+        # Use -65000 instead of -1e9 to be compatible with mixed precision (float16)
+        mask_value = -65000.0 if logits.dtype == torch.float16 else -1e9
+        masked_logits = logits.masked_fill(~dog_mask.bool(), mask_value)
         
         # Convert to probabilities
         win_probabilities = F.softmax(masked_logits, dim=1)  # [batch_size, max_dogs]

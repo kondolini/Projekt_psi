@@ -364,21 +364,29 @@ class GreyhoundDataset(Dataset):
             if not race.odds or len(race.odds) < self.min_dogs_per_race:
                 continue
             
-            # Verify odds are valid numbers and implied probabilities sum > 1.0
+            # Verify ALL dogs in the race have valid odds (more comprehensive check)
+            has_all_valid_odds = True
             valid_odds = []
             for trap_num in race.dog_ids.keys():
                 if trap_num not in race.odds:
+                    has_all_valid_odds = False
                     break  # Missing odds for this dog
                 odds_value = race.odds[trap_num]
                 if odds_value is None or odds_value <= 0:
+                    has_all_valid_odds = False
                     break  # Invalid odds
                 valid_odds.append(odds_value)
-            else:
-                # All dogs have valid odds, check implied probability sum
-                implied_prob_sum = sum(1.0 / odds for odds in valid_odds)
-                if implied_prob_sum <= 1.0:
-                    continue  # Market not complete (missing dogs/odds)
+            
+            if not has_all_valid_odds:
+                continue  # Skip race if any dog has missing/invalid odds
                 
+            # CRITICAL: Check implied probability sum to ensure complete betting market
+            # Sum should be > 1.0 (typically 1.05-1.20) due to bookmaker overround
+            # If ≤ 1.0, it indicates incomplete market or missing runners
+            implied_prob_sum = sum(1.0 / odds for odds in valid_odds)
+            if implied_prob_sum <= 1.0:
+                continue  # Skip race - incomplete betting market (sum of implied probabilities ≤ 1.0)
+            
             # Ensure we have data for all dogs in the race
             dogs_available = sum(1 for dog_id in race.dog_ids.values() 
                                if dog_id in self.dog_lookup)
@@ -518,6 +526,16 @@ class GreyhoundDataset(Dataset):
         # === Dog-level features ===
         dogs_data = self._extract_dogs_data(race, race_datetime)
         
+        # Handle case where race should be skipped due to missing/invalid odds
+        if dogs_data is None:
+            # Try the next race instead of crashing (with safeguard to prevent infinite loops)
+            next_idx = (idx + 1) % len(self.races)
+            if next_idx != idx:  # Prevent infinite recursion
+                return self.__getitem__(next_idx)
+            else:
+                # If we only have one race and it's invalid, create dummy data
+                raise ValueError(f"Race {race.race_id} has invalid odds and is the only race available")
+        
         # Pad or truncate to max_dogs_per_race
         dogs_data = self._pad_dogs_data(dogs_data)
         
@@ -619,9 +637,8 @@ class GreyhoundDataset(Dataset):
             # Market odds (ensure we have valid odds - should be guaranteed by race filtering)
             market_odds = race.odds.get(trap_num) if race.odds else None
             if market_odds is None or market_odds <= 0:
-                # Fallback to default odds if missing (should not happen with proper filtering)
-                market_odds = 5.0
-                logger.warning(f"Missing or invalid odds for race {race.race_id}, trap {trap_num}")
+                # Skip this race entirely if any dog has missing/invalid odds
+                return None
             dogs_data['market_odds'].append(float(market_odds))
         
         return dogs_data
